@@ -5,11 +5,21 @@
 //! probe: `sidecar_ready` means "warm and listening".
 
 use std::process::{Child, Command};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::{capture, transcribe};
+
+/// Pullable readiness. The `sidecar_ready` event alone is a race: after
+/// the first-ever run the GPU driver caches compiled kernels, warmup
+/// finishes in seconds, and the event can fire before the webview has
+/// registered its listeners — leaving the coordinator deaf and every
+/// press refused. TS asks via `is_ready` at startup AND listens for the
+/// event; whichever wins, wins.
+#[derive(Default)]
+pub struct Ready(pub AtomicBool);
 
 /// v1 runs from this repo on this machine, so both paths are compile-time
 /// constants relative to the crate. Bundling for other machines is a future
@@ -51,6 +61,7 @@ async fn warmup(app: AppHandle) {
         match transcribe::transcribe(silence.clone()).await {
             Ok(_) => {
                 println!("[sayit] sidecar warm and ready (attempt {attempt})");
+                app.state::<Ready>().0.store(true, Ordering::Relaxed);
                 let _ = app.emit("sidecar_ready", ());
                 return;
             }

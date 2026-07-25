@@ -18,6 +18,21 @@
         "height": 300,
         "visible": false,
         "skipTaskbar": true
+      },
+      {
+        "label": "waveform",
+        "title": "sayit waveform",
+        "url": "/waveform.html",
+        "width": 280,
+        "height": 64,
+        "visible": false,
+        "decorations": false,
+        "transparent": true,
+        "shadow": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "focusable": false,
+        "resizable": false
       }
     ],
     "security": {

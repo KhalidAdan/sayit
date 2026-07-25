@@ -26,3 +26,6 @@ dist-ssr
 # sayit: large local binaries (see docs/sidecar.md for how to fetch)
 models/
 sidecar/
+
+# This machine's gap dataset (docs/test-plan.md) — data, not source
+gap-log.csv

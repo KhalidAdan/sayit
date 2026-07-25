@@ -88,6 +88,7 @@ pinned by the layer named:
 | rustc crashed (STATUS_STACK_BUFFER_OVERRUN) on 16GB RAM | full-parallel builds exhaust memory; use `-j 2` | build docs |
 | Ghost vite/sidecar from a dead session blocked relaunch | dev processes outlive sessions on Windows | Layer 2 pre-flight |
 | First CUDA inference costs ~55s | warmup at boot is mandatory, and is the readiness probe | design (sidecar.rs) + Layer 1 |
+| `sidecar_ready` event fired before webview listeners existed (driver-cached CUDA kernels make later warmups fast); every press refused | push-only readiness is a race — state must also be pullable (`is_ready`) | design (sidecar::Ready) + Layer 2 smoke asserts a press is accepted |
 
 ## What is deliberately not tested
 
