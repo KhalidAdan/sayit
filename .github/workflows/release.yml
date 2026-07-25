@@ -1,0 +1,42 @@
+# Release bundling in the cloud: runs on version tags (v0.2.0, ...) or the
+# "Run workflow" button. Uploads the exe + installers as artifacts.
+#
+# KNOWN LIMITATION (fix before trusting these artifacts): sidecar.rs,
+# sounds.rs, and lib.rs resolve their paths via CARGO_MANIFEST_DIR at
+# compile time, so a CI-built exe looks for whisper-server, the model, and
+# the soundpack at the RUNNER's paths, not this machine's. Until those
+# paths are runtime-resolved (env var or relative-to-exe), CI bundles
+# prove the build works but the exe only runs where it was compiled.
+name: Release build
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  bundle:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - run: npm run tauri build
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sayit-windows
+          path: |
+            src-tauri/target/release/sayit.exe
+            src-tauri/target/release/bundle/nsis/*.exe
+            src-tauri/target/release/bundle/msi/*.msi

@@ -1,0 +1,35 @@
+# Layer 0 of docs/test-plan.md, on every push: typecheck + build the
+# frontend, run the Rust unit tests. Layers 1-2 need a mic, a GPU, and a
+# desktop — they stay on Khalid's machine by design.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      # tsc (strict, includes the Effect coordinator) + vite build, which
+      # also produces dist/ so tauri's context macro is satisfied.
+      - run: npm run build
+
+      - uses: dtolnay/rust-toolchain@stable
+      # Caches ~/.cargo and target/ keyed on Cargo.lock — the difference
+      # between a 20-minute and a 4-minute run.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: cargo test
+        working-directory: src-tauri
+        run: cargo test
