@@ -69,7 +69,9 @@ const armSleepTimer = Effect.gen(function* () {
 
 // ---- one state transition, mirrored everywhere ----------------------
 
-const show = (next: State) =>
+// Explicit return type: show() re-invokes itself (the heard-nothing tray
+// revert), and TypeScript needs the annotation to allow the recursion.
+const show = (next: State): Effect.Effect<void> =>
   Effect.gen(function* () {
     yield* Ref.set(stateRef, next);
     yield* Effect.sync(() => {
