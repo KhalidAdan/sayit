@@ -1,0 +1,45 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <!-- keycap top face: dark zinc, lit from above -->
+    <linearGradient id="face" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#32323a"/>
+      <stop offset="0.55" stop-color="#222228"/>
+      <stop offset="1" stop-color="#1a1a1f"/>
+    </linearGradient>
+    <!-- keycap base/side: darker, reads as depth -->
+    <linearGradient id="side" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#141417"/>
+      <stop offset="1" stop-color="#0b0b0d"/>
+    </linearGradient>
+    <!-- sayit gold, lit at the top like the waveform bars -->
+    <linearGradient id="gold" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#f6c876"/>
+      <stop offset="0.5" stop-color="#e8b04a"/>
+      <stop offset="1" stop-color="#cf9432"/>
+    </linearGradient>
+    <radialGradient id="sheen" cx="0.5" cy="0.12" r="0.9">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.10"/>
+      <stop offset="0.45" stop-color="#ffffff" stop-opacity="0.02"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <!-- keycap base (the part you see below the top face) -->
+  <rect x="72" y="104" width="880" height="856" rx="200" fill="url(#side)"/>
+  <!-- keycap top face, sitting high like a real cap -->
+  <rect x="104" y="120" width="816" height="768" rx="168" fill="url(#face)"/>
+  <!-- inset ring for definition (dark-mode rule: ring, not shadow) -->
+  <rect x="104" y="120" width="816" height="768" rx="168" fill="none"
+        stroke="#ffffff" stroke-opacity="0.09" stroke-width="6"/>
+  <!-- soft sheen across the cap -->
+  <rect x="104" y="120" width="816" height="768" rx="168" fill="url(#sheen)"/>
+
+  <!-- the legend: sayit's waveform, five gold bars, mid-word -->
+  <g fill="url(#gold)">
+    <rect x="298" y="424" width="84" height="160" rx="42"/>
+    <rect x="422" y="344" width="84" height="320" rx="42"/>
+    <rect x="546" y="272" width="84" height="464" rx="42"/>
+    <rect x="670" y="368" width="84" height="272" rx="42"/>
+    <rect x="794" y="448" width="84" height="112" rx="42"/>
+  </g>
+</svg>
