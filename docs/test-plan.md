@@ -78,20 +78,21 @@ The things only Khalid's ears and hands can judge:
 ## The Regression Ledger
 
 Every one of these reached a human before a test caught it. Each is now
-pinned by the layer named:
+pinned by the layer named. Each carries its episode title — *The Dream
+Team in:* — because memorable bugs teach lessons that stick.
 
-| bug | lesson | pinned at |
-|---|---|---|
-| `[BLANK_AUDIO]` pasted into Notepad | Whisper annotates non-speech in brackets | Layer 0 (`strip_markers`) |
-| Smoke test pasted live room audio into an unknown focused window | the pipeline working = pasting; containment is mandatory | Layer 2 (containment rule) |
-| PowerShell 5.1 wrote BOM into tauri.conf.json; app wouldn't boot | `Set-Content -Encoding utf8` is not UTF-8 | build docs; avoid PS for config writes |
-| rustc crashed (STATUS_STACK_BUFFER_OVERRUN) on 16GB RAM | full-parallel builds exhaust memory; use `-j 2` | build docs |
-| release build OOM'd even at `-j 2` (LLVM out of memory on the `windows` crate) | opt-level=3 multiplies per-crate memory; release builds want `-j 1` with the dev app and sidecar closed | build docs |
-| Ghost vite/sidecar from a dead session blocked relaunch | dev processes outlive sessions on Windows | Layer 2 pre-flight |
-| First CUDA inference costs ~55s | warmup at boot is mandatory, and is the readiness probe | design (sidecar.rs) + Layer 1 |
-| `sidecar_ready` event fired before webview listeners existed (driver-cached CUDA kernels make later warmups fast); every press refused | push-only readiness is a race — state must also be pullable (`is_ready`) | design (sidecar::Ready) + Layer 2 smoke asserts a press is accepted |
-| USB mic replug hung a WASAPI stream; unbounded thread join wedged the coordinator forever ("app does not work") | never wait unboundedly at a seam: handshake with timeout on stream start, bounded ack on teardown, Effect.timeout as the coordinator's seatbelt | design (capture.rs handshakes, main.ts timeout) + Layer 3: replug the mic mid-session, verify next take works |
-| Second press after any completed take hung silently: the sleep-timer fiber was forked inside `ensuring()` (a finalizer = uninterruptible region), inherited uninterruptibility, and `Fiber.interrupt` awaited the full 10-minute sleep | fibers forked in finalizers inherit uninterruptible — mark them `Effect.interruptible` AND cancel with `Fiber.interruptFork` (never await a fiber's death on the hot path). Diagnosed by layered probes: hotkey event log → heartbeat → callback probe | design (main.ts) + Layer 2: smoke runs THREE consecutive takes with the engine ready — single-take smoke let this hide for a day |
+| episode | bug | lesson | pinned at |
+|---|---|---|---|
+| **The Phantom Transcript** | `[BLANK_AUDIO]` pasted into Notepad | Whisper annotates non-speech in brackets | Layer 0 (`strip_markers`) |
+| **The Containment Breach** | Smoke test pasted live room audio into an unknown focused window | the pipeline working = pasting; containment is mandatory | Layer 2 (containment rule) |
+| **The Invisible Byte** | PowerShell 5.1 wrote BOM into tauri.conf.json; app wouldn't boot | `Set-Content -Encoding utf8` is not UTF-8 | build docs; avoid PS for config writes |
+| **The Memory Gremlin** | rustc crashed (STATUS_STACK_BUFFER_OVERRUN) on 16GB RAM | full-parallel builds exhaust memory; use `-j 2` | build docs |
+| **The Gremlin Returns** | release build OOM'd even at `-j 2` (LLVM out of memory on the `windows` crate) | opt-level=3 multiplies per-crate memory; release builds want `-j 1` with the dev app and sidecar closed | build docs |
+| **The Ghosts of Port 1420** | Ghost vite/sidecar from a dead session blocked relaunch | dev processes outlive sessions on Windows | Layer 2 pre-flight |
+| **The Fifty-Five Second Toll** | First CUDA inference costs ~55s | warmup at boot is mandatory, and is the readiness probe | design (sidecar.rs) + Layer 1 |
+| **The Unheard Announcement** | `sidecar_ready` event fired before webview listeners existed (driver-cached CUDA kernels make later warmups fast); every press refused | push-only readiness is a race — state must also be pullable (`is_ready`) | design (sidecar::Ready) + Layer 2 smoke asserts a press is accepted |
+| **The Unplugging** | USB mic replug hung a WASAPI stream; unbounded thread join wedged the coordinator forever ("app does not work") | never wait unboundedly at a seam: handshake with timeout on stream start, bounded ack on teardown, Effect.timeout as the coordinator's seatbelt | design (capture.rs handshakes, main.ts timeout) + Layer 3: replug the mic mid-session, verify next take works |
+| **The Deadlock Hunt** | Second press after any completed take hung silently: the sleep-timer fiber was forked inside `ensuring()` (a finalizer = uninterruptible region), inherited uninterruptibility, and `Fiber.interrupt` awaited the full 10-minute sleep | fibers forked in finalizers inherit uninterruptible — mark them `Effect.interruptible` AND cancel with `Fiber.interruptFork` (never await a fiber's death on the hot path). Diagnosed by layered probes: hotkey event log → heartbeat → callback probe | design (main.ts) + Layer 2: smoke runs THREE consecutive takes with the engine ready — single-take smoke let this hide for a day |
 
 ## What is deliberately not tested
 
