@@ -8,6 +8,7 @@
 mod capture;
 mod hotkey;
 mod inject;
+mod settings;
 mod sidecar;
 mod sounds;
 mod transcribe;
@@ -71,6 +72,13 @@ fn tray_status(app: tauri::AppHandle, text: String) {
 #[tauri::command]
 fn is_ready(ready: tauri::State<sidecar::Ready>) -> bool {
     ready.0.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// The coordinator pulls this at boot so its sleep timer honors the
+/// persisted keep-awake preference.
+#[tauri::command]
+fn get_keep_awake(app: tauri::AppHandle) -> bool {
+    settings::load(&app).keep_awake
 }
 
 #[tauri::command]
@@ -145,7 +153,9 @@ pub fn run() {
         .manage(tray::Tray::default())
         .manage(MicChoice(Mutex::new(None)))
         .setup(|app| {
-            tray::build(app.handle())?;
+            let saved = settings::load(app.handle());
+            *app.state::<MicChoice>().0.lock().unwrap() = saved.microphone.clone();
+            tray::build(app.handle(), &saved)?;
             sidecar::start(app.handle())?;
             println!("[sayit] push-to-talk on {}", hotkey::PUSH_TO_TALK);
             Ok(())
@@ -157,6 +167,7 @@ pub fn run() {
             play_sound,
             tray_status,
             is_ready,
+            get_keep_awake,
             engine_start,
             engine_sleep,
             log_gap,

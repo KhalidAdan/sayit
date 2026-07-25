@@ -12,34 +12,36 @@ use tauri::tray::{TrayIcon, TrayIconBuilder};
 use tauri::{AppHandle, Emitter, Manager, Wry};
 use tauri_plugin_autostart::ManagerExt;
 
-use crate::MicChoice;
+use crate::{settings, MicChoice};
 
 #[derive(Default)]
 pub struct Tray {
     handles: Mutex<Option<(TrayIcon<Wry>, MenuItem<Wry>)>>,
 }
 
-pub fn build(app: &AppHandle) -> tauri::Result<()> {
+pub fn build(app: &AppHandle, saved: &settings::Settings) -> tauri::Result<()> {
     let status = MenuItem::with_id(app, "status", "warming up…", false, None::<&str>)?;
 
     // Microphone picker: system default plus every input device present at
-    // boot. (Devices plugged in later appear on next launch — acceptable
-    // until real friction says otherwise.)
+    // boot, with the persisted choice pre-checked. (A saved mic that's
+    // currently unplugged shows nothing checked but stays saved — capture
+    // falls back to default until it returns.)
     let mut mic_items = vec![CheckMenuItem::with_id(
         app,
         "mic:",
         "System default",
         true,
-        true,
+        saved.microphone.is_none(),
         None::<&str>,
     )?];
     for name in crate::capture::list_inputs() {
+        let chosen = saved.microphone.as_deref() == Some(name.as_str());
         mic_items.push(CheckMenuItem::with_id(
             app,
             format!("mic:{name}"),
             &name,
             true,
-            false,
+            chosen,
             None::<&str>,
         )?);
     }
@@ -69,7 +71,7 @@ pub fn build(app: &AppHandle) -> tauri::Result<()> {
         "keepawake",
         "Keep engine awake",
         true,
-        false,
+        saved.keep_awake,
         None::<&str>,
     )?;
 
@@ -101,11 +103,18 @@ pub fn build(app: &AppHandle) -> tauri::Result<()> {
             if id == "quit" {
                 app.exit(0); // RunEvent::Exit kills the sidecar on the way out
             } else if id == "keepawake" {
-                // The item toggles itself; report the new state upward and
-                // let the coordinator manage its own timer.
+                // The item toggles itself; report the new state upward, let
+                // the coordinator manage its timer, and persist the choice.
                 let on = keep_awake.is_checked().unwrap_or(false);
                 println!("[sayit] keep engine awake: {on}");
                 let _ = app.emit("keep_awake", on);
+                settings::save(
+                    app,
+                    &settings::Settings {
+                        microphone: app.state::<MicChoice>().0.lock().unwrap().clone(),
+                        keep_awake: on,
+                    },
+                );
             } else if id == "autostart" {
                 let launcher = app.autolaunch();
                 let flip = match launcher.is_enabled() {
@@ -122,10 +131,17 @@ pub fn build(app: &AppHandle) -> tauri::Result<()> {
                     "[sayit] microphone: {}",
                     choice.as_deref().unwrap_or("system default")
                 );
-                *app.state::<MicChoice>().0.lock().unwrap() = choice;
+                *app.state::<MicChoice>().0.lock().unwrap() = choice.clone();
                 for item in &mic_items {
                     let _ = item.set_checked(item.id().as_ref() == id);
                 }
+                settings::save(
+                    app,
+                    &settings::Settings {
+                        microphone: choice,
+                        keep_awake: keep_awake.is_checked().unwrap_or(false),
+                    },
+                );
             }
         })
         .build(app)?;

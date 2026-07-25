@@ -159,8 +159,10 @@ const becomeReady = Effect.gen(function* () {
 
 // Race-proofing: warmup may finish before this page's listeners exist,
 // so we PULL readiness once at startup and also listen for the push.
+// The persisted keep-awake preference is pulled the same way.
 void Effect.runPromise(
   Effect.gen(function* () {
+    yield* Ref.set(keepAwakeRef, yield* cmd<boolean>("get_keep_awake"));
     if (yield* cmd<boolean>("is_ready")) yield* becomeReady;
   }).pipe(Effect.ignore),
 );
