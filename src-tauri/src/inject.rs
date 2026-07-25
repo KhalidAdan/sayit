@@ -36,7 +36,15 @@ pub fn inject(text: &str) -> Result<(), String> {
     // soon hands it the old contents instead. 300ms is generous and invisible.
     sleep(Duration::from_millis(300));
     if let Some(saved) = saved {
-        let _ = clipboard.set_text(saved);
+        // Restore on a detached thread: Windows clipboard access can block
+        // indefinitely when another process (clipboard managers) holds it.
+        // The paste already succeeded — a hung restore must cost at worst
+        // the old clipboard contents, never the pipeline.
+        std::thread::spawn(move || {
+            if let Ok(mut clipboard) = arboard::Clipboard::new() {
+                let _ = clipboard.set_text(saved);
+            }
+        });
     }
     Ok(())
 }

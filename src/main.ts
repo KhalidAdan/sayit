@@ -39,6 +39,7 @@ const waveform = (visible: boolean) =>
   cmd(visible ? "waveform_show" : "waveform_hide").pipe(Effect.ignore);
 
 const stateRef = Ref.unsafeMake<State>("idle");
+const heardNothingRef = Ref.unsafeMake(false);
 const engineRef = Ref.unsafeMake<Engine>("waking"); // boot starts the engine
 const keepAwakeRef = Ref.unsafeMake(false);
 const lastGapMs = Ref.unsafeMake<number | null>(null);
@@ -77,7 +78,21 @@ const show = (next: State) =>
     });
     if (next === "idle") {
       const engine = yield* Ref.get(engineRef);
-      if (engine === "sleeping") {
+      const heardNothing = yield* Ref.get(heardNothingRef);
+      if (heardNothing) {
+        // A take transcribed to empty: say so instead of pretending
+        // nothing happened, then revert to the normal idle text.
+        yield* Ref.set(heardNothingRef, false);
+        yield* trayStatus("heard nothing — mic muted or dead?");
+        yield* Effect.sleep(Duration.seconds(4)).pipe(
+          Effect.zipRight(
+            Effect.gen(function* () {
+              if ((yield* Ref.get(stateRef)) === "idle") yield* show("idle");
+            }),
+          ),
+          Effect.forkDaemon,
+        );
+      } else if (engine === "sleeping") {
         yield* trayStatus("engine sleeping — press to talk");
       } else if (engine === "waking") {
         yield* trayStatus("waking up…");
@@ -129,7 +144,12 @@ const onPushFinished = Effect.gen(function* () {
   if ((yield* Ref.get(stateRef)) !== "recording") return;
   const t0 = yield* Clock.currentTimeMillis;
   yield* show("transcribing");
-  const text = yield* cmd<string>("stop_and_transcribe");
+  // Timeout is the coordinator's own seatbelt: whatever the Rust side
+  // does — hung device, dead engine — this state machine returns to idle.
+  // 100s clears transcribe_waiting's 90s patience with room to spare.
+  const text = yield* cmd<string>("stop_and_transcribe").pipe(
+    Effect.timeout(Duration.seconds(100)),
+  );
   if (text.trim().length > 0) {
     yield* show("injecting");
     yield* cmd("inject_text", { text });
@@ -137,11 +157,22 @@ const onPushFinished = Effect.gen(function* () {
     const gap = Number((yield* Clock.currentTimeMillis) - t0);
     yield* Ref.set(lastGapMs, gap);
     yield* cmd("log_gap", { totalMs: gap, chars: text.length }).pipe(Effect.ignore);
+  } else {
+    // An empty take must be FELT: woosh now, tray explains via the
+    // heardNothing flag when ensuring() returns us to idle.
+    yield* sound("refuse");
+    yield* Ref.set(heardNothingRef, true);
   }
 }).pipe(
-  Effect.catchTag("CmdError", (e) =>
+  // The WHOLE take wears the seatbelt — transcribe, inject, everything.
+  // (Learned the hard way: a hung clipboard after a successful paste
+  // wedged the flow *after* the text had visibly landed.)
+  Effect.timeout(Duration.seconds(110)),
+  // CmdError = a stage failed; TimeoutException = a stage never answered.
+  // Both end the same way: audible refusal, back to idle, key usable.
+  Effect.catchAll((e) =>
     Effect.gen(function* () {
-      yield* Effect.sync(() => console.error(`[sayit] ${e.cmd} failed:`, e.cause));
+      yield* Effect.sync(() => console.error("[sayit] take failed:", e));
       yield* sound("refuse");
     }),
   ),

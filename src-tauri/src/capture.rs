@@ -9,7 +9,7 @@
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::mpsc::{channel, Sender};
+use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use tauri::{AppHandle, Emitter};
@@ -26,6 +26,7 @@ pub type CaptureState = Mutex<Capture>;
 
 struct Session {
     stop: Sender<()>,
+    ack: Receiver<()>,
     thread: JoinHandle<()>,
     samples: Arc<Mutex<Vec<f32>>>,
     source_rate: u32,
@@ -67,6 +68,12 @@ pub fn start(state: &CaptureState, app: &AppHandle, preferred: Option<String>) -
 
     let samples: Arc<Mutex<Vec<f32>>> = Arc::default();
     let (stop, stopped) = channel::<()>();
+    // Bounded-trust handshakes: the thread reports "stream is live" and
+    // "stream is torn down", and we WAIT WITH TIMEOUTS. A replugged USB
+    // mic can hang WASAPI mid-build or mid-teardown; an unbounded wait
+    // there once wedged the whole coordinator (see regression ledger).
+    let (ready_tx, ready_rx) = channel::<Result<(), String>>();
+    let (ack_tx, ack_rx) = channel::<()>();
     // Peak level of the most recent chunks, stored as f32 bits so the
     // realtime callback never takes a lock.
     let level = Arc::new(AtomicU32::new(0));
@@ -139,19 +146,35 @@ pub fn start(state: &CaptureState, app: &AppHandle, preferred: Option<String>) -
             }
         };
         match stream {
-            Ok(stream) => {
-                if stream.play().is_ok() {
+            Ok(stream) => match stream.play() {
+                Ok(()) => {
+                    let _ = ready_tx.send(Ok(()));
                     // Block until stop() signals (or the sender is dropped).
                     let _ = stopped.recv();
+                    drop(stream); // torn down on the thread that built it
+                    let _ = ack_tx.send(());
                 }
-                // The stream drops here, on the thread that built it.
+                Err(e) => {
+                    let _ = ready_tx.send(Err(format!("mic stream won't start: {e}")));
+                }
+            },
+            Err(e) => {
+                let _ = ready_tx.send(Err(format!("failed to open mic stream: {e}")));
             }
-            Err(e) => eprintln!("[capture] failed to open stream: {e}"),
         }
     });
 
+    // If the stream isn't live within 3s, the take is refused loudly now
+    // rather than recording silence into a hung device.
+    match ready_rx.recv_timeout(std::time::Duration::from_secs(3)) {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => return Err(e),
+        Err(_) => return Err("microphone did not start (device hung after replug?)".into()),
+    }
+
     capture.session = Some(Session {
         stop,
+        ack: ack_rx,
         thread,
         samples,
         source_rate,
@@ -171,8 +194,20 @@ pub fn stop(state: &CaptureState) -> Result<Vec<f32>, String> {
 
     session.alive.store(false, Ordering::Relaxed);
     let _ = session.stop.send(());
-    let _ = session.thread.join(); // stream fully closed: the buffer is final
+    // Wait for teardown, but only briefly: a hung device must cost us a
+    // zombie thread at worst, never a wedged pipeline. The session was
+    // already take()n above, so the next press starts clean regardless.
+    match session.ack.recv_timeout(std::time::Duration::from_secs(2)) {
+        Ok(()) => {
+            let _ = session.thread.join(); // ack sent: join returns promptly
+        }
+        Err(_) => eprintln!("[capture] mic teardown hung; proceeding with buffered audio"),
+    }
     let recorded = std::mem::take(&mut *session.samples.lock().unwrap());
+    // Diagnostic breadcrumb: a "working" mic that delivers silence (seen
+    // after a USB replug) shows up here as a near-zero peak on a real take.
+    let peak = recorded.iter().fold(0f32, |m, s| m.max(s.abs()));
+    println!("[capture] take peak level: {peak:.4}");
     Ok(resample(&recorded, session.source_rate, TARGET_SAMPLE_RATE))
 }
 
