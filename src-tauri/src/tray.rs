@@ -9,7 +9,7 @@
 use std::sync::Mutex;
 use tauri::menu::{CheckMenuItem, IsMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::tray::{TrayIcon, TrayIconBuilder};
-use tauri::{AppHandle, Manager, Wry};
+use tauri::{AppHandle, Emitter, Manager, Wry};
 use tauri_plugin_autostart::ManagerExt;
 
 use crate::MicChoice;
@@ -61,6 +61,18 @@ pub fn build(app: &AppHandle) -> tauri::Result<()> {
         None::<&str>,
     )?;
 
+    // Engine override: auto-sleep is the default metabolism; this pins the
+    // engine awake for heavy dictation days. The timer lives in the
+    // coordinator, so this just reports the toggle upward.
+    let keep_awake = CheckMenuItem::with_id(
+        app,
+        "keepawake",
+        "Keep engine awake",
+        true,
+        false,
+        None::<&str>,
+    )?;
+
     let quit = MenuItem::with_id(app, "quit", "Quit sayit", true, None::<&str>)?;
     let menu = Menu::with_items(
         app,
@@ -68,6 +80,7 @@ pub fn build(app: &AppHandle) -> tauri::Result<()> {
             &status,
             &PredefinedMenuItem::separator(app)?,
             &mics,
+            &keep_awake,
             &autostart,
             &PredefinedMenuItem::separator(app)?,
             &quit,
@@ -87,6 +100,12 @@ pub fn build(app: &AppHandle) -> tauri::Result<()> {
             let id = event.id().as_ref();
             if id == "quit" {
                 app.exit(0); // RunEvent::Exit kills the sidecar on the way out
+            } else if id == "keepawake" {
+                // The item toggles itself; report the new state upward and
+                // let the coordinator manage its own timer.
+                let on = keep_awake.is_checked().unwrap_or(false);
+                println!("[sayit] keep engine awake: {on}");
+                let _ = app.emit("keep_awake", on);
             } else if id == "autostart" {
                 let launcher = app.autolaunch();
                 let flip = match launcher.is_enabled() {

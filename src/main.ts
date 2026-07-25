@@ -1,36 +1,36 @@
-// The coordinator, now in Effect. Rust touches the OS, the sidecar thinks —
-// this file makes decisions, and Effect is how the decisions are written.
+// The coordinator, in Effect. Rust touches the OS, the sidecar thinks —
+// this file makes decisions, including the engine's metabolism: awake
+// while you dictate, asleep after ten idle minutes, woken by the key
+// itself. The user never manages any of it. The key always works.
 //
 // Reading guide for future-Khalid:
-// - An Effect is a *description* of a computation — nothing runs until
-//   Effect.runPromise. Building programs as values is the whole trick.
-// - Effect.gen + yield* reads like async/await, but errors are typed
-//   values in the error channel, not thrown surprises.
-// - Ref is Effect's mutable cell; Clock is time-as-a-service (testable,
-//   unlike Date.now()).
+// - An Effect is a *description* — nothing runs until Effect.runPromise.
+// - Effect.gen + yield* reads like async/await with typed errors.
+// - Ref is a mutable cell; Clock is time-as-a-service; a Fiber is a
+//   running Effect you can interrupt — our sleep timer is one.
 
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { Clock, Data, Effect, Ref } from "effect";
+import { Clock, Data, Duration, Effect, Fiber, Ref } from "effect";
 
 type State = "idle" | "recording" | "transcribing" | "injecting";
+type Engine = "sleeping" | "waking" | "ready";
 
-// A failed Tauri command as a typed, tagged error value. catchTag can
-// route on the tag; the cause rides along for logging.
+/// After this much idle, the engine sleeps and ~500MB of VRAM comes home.
+const IDLE_SLEEP = Duration.minutes(10);
+
 class CmdError extends Data.TaggedError("CmdError")<{
   readonly cmd: string;
   readonly cause: unknown;
 }> {}
 
-// The bridge from Tauri's promise world into Effect's.
 const cmd = <T = void>(name: string, args?: Record<string, unknown>) =>
   Effect.tryPromise({
     try: () => invoke<T>(name, args),
     catch: (cause) => new CmdError({ cmd: name, cause }),
   });
 
-// Sounds, tray text, and the waveform are fire-and-forget: their failure
-// must never fail the pipeline, so Effect.ignore erases their errors.
+// Fire-and-forget concerns: their failure must never fail the pipeline.
 const sound = (slot: "press" | "refuse" | "accept") =>
   cmd("play_sound", { slot }).pipe(Effect.ignore);
 const trayStatus = (text: string) =>
@@ -39,11 +39,35 @@ const waveform = (visible: boolean) =>
   cmd(visible ? "waveform_show" : "waveform_hide").pipe(Effect.ignore);
 
 const stateRef = Ref.unsafeMake<State>("idle");
-const readyRef = Ref.unsafeMake(false);
+const engineRef = Ref.unsafeMake<Engine>("waking"); // boot starts the engine
+const keepAwakeRef = Ref.unsafeMake(false);
 const lastGapMs = Ref.unsafeMake<number | null>(null);
+const sleepTimerRef = Ref.unsafeMake<Fiber.RuntimeFiber<void, never> | null>(null);
 
-// One state transition: set the ref, mirror to console/DOM/tray/waveform.
-// Every path through the app goes through here — the tray can't lie.
+// ---- the engine's metabolism ----------------------------------------
+
+const cancelSleepTimer = Effect.gen(function* () {
+  const fiber = yield* Ref.get(sleepTimerRef);
+  if (fiber) yield* Fiber.interrupt(fiber);
+  yield* Ref.set(sleepTimerRef, null);
+});
+
+// Armed on every return to idle; interrupted by the next press. If it
+// ever fires, the engine sleeps — invisibly, announced only by the tray.
+const armSleepTimer = Effect.gen(function* () {
+  yield* cancelSleepTimer;
+  const keepAwake = yield* Ref.get(keepAwakeRef);
+  const engine = yield* Ref.get(engineRef);
+  if (keepAwake || engine !== "ready") return;
+  const fiber = yield* Effect.sleep(IDLE_SLEEP).pipe(
+    Effect.zipRight(cmd("engine_sleep").pipe(Effect.ignore)),
+    Effect.forkDaemon,
+  );
+  yield* Ref.set(sleepTimerRef, fiber);
+});
+
+// ---- one state transition, mirrored everywhere ----------------------
+
 const show = (next: State) =>
   Effect.gen(function* () {
     yield* Ref.set(stateRef, next);
@@ -51,14 +75,19 @@ const show = (next: State) =>
       console.log(`[sayit] state: ${next}`);
       document.body.dataset.state = next;
     });
-    const ready = yield* Ref.get(readyRef);
-    if (!ready) {
-      yield* trayStatus("warming up…");
-    } else if (next === "idle") {
-      const gap = yield* Ref.get(lastGapMs);
-      yield* trayStatus(
-        gap === null ? "ready — hold F9 to dictate" : `ready — last take ${gap}ms`,
-      );
+    if (next === "idle") {
+      const engine = yield* Ref.get(engineRef);
+      if (engine === "sleeping") {
+        yield* trayStatus("engine sleeping — press to talk");
+      } else if (engine === "waking") {
+        yield* trayStatus("waking up…");
+      } else {
+        const gap = yield* Ref.get(lastGapMs);
+        yield* trayStatus(
+          gap === null ? "ready — hold F9 to dictate" : `ready — last take ${gap}ms`,
+        );
+      }
+      yield* armSleepTimer;
     } else {
       yield* trayStatus(
         { recording: "listening…", transcribing: "thinking…", injecting: "typing…" }[next],
@@ -67,13 +96,19 @@ const show = (next: State) =>
     yield* waveform(next === "recording");
   });
 
-// Key went down. Record only from a ready idle; anything else is refused,
-// audibly — the worst dictation experience is talking to nobody.
+// ---- the pipeline ---------------------------------------------------
+
+// Key went down. From idle the press ALWAYS records — engine awake or
+// not. Capture needs no engine; only transcription does, and it knows
+// how to wait. Refusal is reserved for mid-pipeline presses.
 const onPushStarted = Effect.gen(function* () {
-  const state = yield* Ref.get(stateRef);
-  const ready = yield* Ref.get(readyRef);
-  if (state !== "idle" || !ready) {
+  if ((yield* Ref.get(stateRef)) !== "idle") {
     return yield* sound("refuse");
+  }
+  yield* cancelSleepTimer;
+  if ((yield* Ref.get(engineRef)) === "sleeping") {
+    yield* cmd("engine_start").pipe(Effect.ignore); // idempotent wake
+    yield* Ref.set(engineRef, "waking");
   }
   yield* cmd("start_capture");
   yield* show("recording");
@@ -88,9 +123,8 @@ const onPushStarted = Effect.gen(function* () {
   ),
 );
 
-// Key came up. Run the take through the pipeline, timing the gap — the
-// number the whole project is judged by. ensuring() is Effect's `finally`:
-// whatever happens, we return to idle.
+// Key came up. stop_and_transcribe is patient on the Rust side: if this
+// take raced an engine wake, it waits for warmth instead of failing.
 const onPushFinished = Effect.gen(function* () {
   if ((yield* Ref.get(stateRef)) !== "recording") return;
   const t0 = yield* Clock.currentTimeMillis;
@@ -106,21 +140,24 @@ const onPushFinished = Effect.gen(function* () {
   }
 }).pipe(
   Effect.catchTag("CmdError", (e) =>
-    Effect.sync(() => console.error(`[sayit] ${e.cmd} failed:`, e.cause)),
+    Effect.gen(function* () {
+      yield* Effect.sync(() => console.error(`[sayit] ${e.cmd} failed:`, e.cause));
+      yield* sound("refuse");
+    }),
   ),
   Effect.ensuring(show("idle")),
 );
 
+// ---- engine + readiness events --------------------------------------
+
 const becomeReady = Effect.gen(function* () {
-  const already = yield* Ref.get(readyRef);
-  if (already) return; // event and startup poll can both land; first wins
-  yield* Effect.sync(() => console.log("[sayit] sidecar ready — dictation live"));
-  yield* Ref.set(readyRef, true);
-  yield* show("idle");
+  if ((yield* Ref.get(engineRef)) === "ready") return;
+  yield* Effect.sync(() => console.log("[sayit] engine ready — dictation live"));
+  yield* Ref.set(engineRef, "ready");
+  if ((yield* Ref.get(stateRef)) === "idle") yield* show("idle");
 });
 
-// Race-proofing: the sidecar may warm up before this page's listeners
-// exist (cached CUDA kernels make warmup fast after the first-ever run),
+// Race-proofing: warmup may finish before this page's listeners exist,
 // so we PULL readiness once at startup and also listen for the push.
 void Effect.runPromise(
   Effect.gen(function* () {
@@ -128,11 +165,46 @@ void Effect.runPromise(
   }).pipe(Effect.ignore),
 );
 
-// The edges of the world: Tauri events arrive as callbacks, and each one
-// launches its Effect program.
 listen("push_started", () => void Effect.runPromise(onPushStarted));
 listen("push_finished", () => void Effect.runPromise(onPushFinished));
 listen("sidecar_ready", () => void Effect.runPromise(becomeReady));
+
+listen("engine_waking", () =>
+  void Effect.runPromise(
+    Effect.gen(function* () {
+      yield* Ref.set(engineRef, "waking");
+      if ((yield* Ref.get(stateRef)) === "idle") yield* show("idle");
+    }),
+  ),
+);
+
+listen("engine_sleeping", () =>
+  void Effect.runPromise(
+    Effect.gen(function* () {
+      yield* Ref.set(engineRef, "sleeping");
+      if ((yield* Ref.get(stateRef)) === "idle") yield* show("idle");
+    }),
+  ),
+);
+
+listen<boolean>("keep_awake", (e) =>
+  void Effect.runPromise(
+    Effect.gen(function* () {
+      yield* Ref.set(keepAwakeRef, e.payload);
+      if (e.payload) {
+        yield* cancelSleepTimer;
+        // Pinning awake while asleep also wakes it: the user asked for a
+        // hot engine, give them one.
+        if ((yield* Ref.get(engineRef)) === "sleeping") {
+          yield* cmd("engine_start").pipe(Effect.ignore);
+        }
+      } else if ((yield* Ref.get(stateRef)) === "idle") {
+        yield* armSleepTimer;
+      }
+    }),
+  ),
+);
+
 listen("pipeline_error", (e) =>
   void Effect.runPromise(
     Effect.gen(function* () {

@@ -4,8 +4,27 @@
 //! an HTTP boundary you can point at.
 
 use std::io::Cursor;
+use std::time::{Duration, Instant};
 
 pub const SIDECAR_PORT: u16 = 8642;
+
+/// Like `transcribe`, but patient: while the engine is waking (connection
+/// refused), retry every 500ms until the deadline. The user's take is
+/// often the very first request after a wake — audio must never be lost
+/// to a nap the app itself decided to take.
+pub async fn transcribe_waiting(samples: Vec<f32>, deadline: Duration) -> Result<String, String> {
+    let started = Instant::now();
+    loop {
+        match transcribe(samples.clone()).await {
+            Ok(text) => return Ok(text),
+            Err(e) if started.elapsed() < deadline => {
+                let _ = e; // engine still waking; keep trying
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+            Err(e) => return Err(format!("engine never answered: {e}")),
+        }
+    }
+}
 
 /// 16kHz mono samples in, whitespace-normalized text out.
 pub async fn transcribe(samples: Vec<f32>) -> Result<String, String> {

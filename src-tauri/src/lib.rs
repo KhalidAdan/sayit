@@ -43,7 +43,9 @@ async fn stop_and_transcribe(
         "[sayit] captured {:.1}s of audio",
         samples.len() as f32 / capture::TARGET_SAMPLE_RATE as f32
     );
-    let text = transcribe::transcribe(samples).await?;
+    // Patient: if the take raced an engine wake, wait for it. 90s covers
+    // even a first-ever CUDA warmup.
+    let text = transcribe::transcribe_waiting(samples, std::time::Duration::from_secs(90)).await?;
     println!("[sayit] transcribed: {text:?}");
     Ok(text)
 }
@@ -69,6 +71,16 @@ fn tray_status(app: tauri::AppHandle, text: String) {
 #[tauri::command]
 fn is_ready(ready: tauri::State<sidecar::Ready>) -> bool {
     ready.0.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+#[tauri::command]
+fn engine_start(app: tauri::AppHandle) -> Result<(), String> {
+    sidecar::start(&app)
+}
+
+#[tauri::command]
+fn engine_sleep(app: tauri::AppHandle) {
+    sidecar::sleep(&app);
 }
 
 /// The gap, measured, not vibed: release-to-text-landed per take. Printed
@@ -134,8 +146,7 @@ pub fn run() {
         .manage(MicChoice(Mutex::new(None)))
         .setup(|app| {
             tray::build(app.handle())?;
-            let child = sidecar::spawn(app.handle().clone())?;
-            *app.state::<sidecar::Sidecar>().0.lock().unwrap() = Some(child);
+            sidecar::start(app.handle())?;
             println!("[sayit] push-to-talk on {}", hotkey::PUSH_TO_TALK);
             Ok(())
         })
@@ -146,6 +157,8 @@ pub fn run() {
             play_sound,
             tray_status,
             is_ready,
+            engine_start,
+            engine_sleep,
             log_gap,
             waveform_show,
             waveform_hide
