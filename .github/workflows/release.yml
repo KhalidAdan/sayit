@@ -1,12 +1,10 @@
 # Release bundling in the cloud: runs on version tags (v0.2.0, ...) or the
 # "Run workflow" button. Uploads the exe + installers as artifacts.
 #
-# KNOWN LIMITATION (fix before trusting these artifacts): sidecar.rs,
-# sounds.rs, and lib.rs resolve their paths via CARGO_MANIFEST_DIR at
-# compile time, so a CI-built exe looks for whisper-server, the model, and
-# the soundpack at the RUNNER's paths, not this machine's. Until those
-# paths are runtime-resolved (env var or relative-to-exe), CI bundles
-# prove the build works but the exe only runs where it was compiled.
+# The exe resolves its companions at RUNTIME (paths.rs): env override,
+# next-to-exe, or repo-ancestor walk. To use a CI artifact: drop sayit.exe
+# anywhere inside a clone that has sidecar/ and models/ populated (see
+# docs/sidecar.md), or place those folders next to the exe.
 name: Release build
 
 on:

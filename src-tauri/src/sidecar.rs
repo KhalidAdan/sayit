@@ -22,15 +22,6 @@ pub struct Ready(pub AtomicBool);
 
 pub struct Sidecar(pub Mutex<Option<Child>>);
 
-/// v1 runs from this repo on this machine, so both paths are compile-time
-/// constants relative to the crate. Bundling for other machines is a future
-/// problem (north star: "an installer for strangers").
-const SERVER_EXE: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    r"\..\sidecar\whisper-cublas\Release\whisper-server.exe"
-);
-const MODEL: &str = concat!(env!("CARGO_MANIFEST_DIR"), r"\..\models\ggml-small.bin");
-
 /// Start (or wake) the engine. Idempotent: a running or already-waking
 /// engine is left alone, so the coordinator can call this on every press
 /// without thinking.
@@ -44,15 +35,17 @@ pub fn start(app: &AppHandle) -> Result<(), String> {
         return Ok(());
     }
 
-    let child = Command::new(SERVER_EXE)
-        .args([
-            "-m",
-            MODEL,
-            "--host",
-            "127.0.0.1",
-            "--port",
-            &transcribe::SIDECAR_PORT.to_string(),
-        ])
+    // Companions are found at runtime (env override, next-to-exe, or repo
+    // layout) — see paths.rs. The same exe works everywhere.
+    let server = crate::paths::sidecar_exe()?;
+    let model = crate::paths::model()?;
+    let child = Command::new(server)
+        .arg("-m")
+        .arg(&model)
+        .arg("--host")
+        .arg("127.0.0.1")
+        .arg("--port")
+        .arg(transcribe::SIDECAR_PORT.to_string())
         .creation_flags(CREATE_NO_WINDOW)
         .spawn()
         .map_err(|e| format!("failed to spawn whisper-server: {e}"))?;

@@ -8,6 +8,7 @@
 mod capture;
 mod hotkey;
 mod inject;
+mod paths;
 mod settings;
 mod sidecar;
 mod sounds;
@@ -21,9 +22,6 @@ use tauri::Manager;
 /// The tray's microphone pick. None = system default.
 pub struct MicChoice(pub Mutex<Option<String>>);
 
-/// Where the gap dataset accumulates: one CSV row per successful take.
-/// Gitignored — it's this machine's diary, not source code.
-const GAP_LOG: &str = concat!(env!("CARGO_MANIFEST_DIR"), r"\..\gap-log.csv");
 
 #[tauri::command]
 fn start_capture(
@@ -92,16 +90,21 @@ fn engine_sleep(app: tauri::AppHandle) {
 }
 
 /// The gap, measured, not vibed: release-to-text-landed per take. Printed
-/// for the log and appended to the CSV so v3's entry gate has a dataset.
+/// for the log and appended to a CSV in the app config dir (next to
+/// settings.json — it's this machine's diary) so v3's entry gate has a
+/// dataset.
 #[tauri::command]
-fn log_gap(total_ms: u64, chars: usize) {
+fn log_gap(app: tauri::AppHandle, total_ms: u64, chars: usize) {
     println!("[sayit] gap: {total_ms}ms for {chars} chars");
+    let Ok(dir) = app.path().app_config_dir() else { return };
+    let _ = std::fs::create_dir_all(&dir);
+    let csv = dir.join("gap-log.csv");
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    let new = !std::path::Path::new(GAP_LOG).exists();
-    if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(GAP_LOG) {
+    let new = !csv.exists();
+    if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(csv) {
         if new {
             let _ = writeln!(file, "unix_ts,total_ms,chars");
         }

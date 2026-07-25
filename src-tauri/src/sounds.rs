@@ -11,7 +11,6 @@ use std::collections::HashMap;
 use std::io::Cursor;
 use std::sync::mpsc::{channel, Sender};
 
-const SOUNDPACK_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), r"\..\soundpack");
 const SLOTS: [&str; 3] = ["press", "refuse", "accept"];
 const EXTENSIONS: [&str; 2] = ["wav", "ogg"]; // wav wins when both exist
 
@@ -30,11 +29,13 @@ pub fn start() -> Sounds {
 
     std::thread::spawn(move || {
         let mut loaded: HashMap<&'static str, Vec<u8>> = HashMap::new();
-        for slot in SLOTS {
-            for ext in EXTENSIONS {
-                if let Ok(bytes) = std::fs::read(format!(r"{SOUNDPACK_DIR}\{slot}.{ext}")) {
-                    loaded.insert(slot, bytes);
-                    break;
+        if let Some(dir) = crate::paths::soundpack_dir() {
+            for slot in SLOTS {
+                for ext in EXTENSIONS {
+                    if let Ok(bytes) = std::fs::read(dir.join(format!("{slot}.{ext}"))) {
+                        loaded.insert(slot, bytes);
+                        break;
+                    }
                 }
             }
         }
