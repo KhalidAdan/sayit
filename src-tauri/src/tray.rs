@@ -75,6 +75,13 @@ pub fn build(app: &AppHandle, saved: &settings::Settings) -> tauri::Result<()> {
         None::<&str>,
     )?;
 
+    let about = MenuItem::with_id(
+        app,
+        "about",
+        "made by the Dream Team — GitHub ↗",
+        true,
+        None::<&str>,
+    )?;
     let quit = MenuItem::with_id(app, "quit", "Quit sayit", true, None::<&str>)?;
     let menu = Menu::with_items(
         app,
@@ -85,6 +92,7 @@ pub fn build(app: &AppHandle, saved: &settings::Settings) -> tauri::Result<()> {
             &keep_awake,
             &autostart,
             &PredefinedMenuItem::separator(app)?,
+            &about,
             &quit,
         ],
     )?;
@@ -102,6 +110,12 @@ pub fn build(app: &AppHandle, saved: &settings::Settings) -> tauri::Result<()> {
             let id = event.id().as_ref();
             if id == "quit" {
                 app.exit(0); // RunEvent::Exit kills the sidecar on the way out
+            } else if id == "about" {
+                // explorer.exe opens URLs in the default browser — no
+                // opener plugin needed for one link.
+                let _ = std::process::Command::new("explorer")
+                    .arg("https://github.com/KhalidAdan/sayit")
+                    .spawn();
             } else if id == "keepawake" {
                 // The item toggles itself; report the new state upward, let
                 // the coordinator manage its timer, and persist the choice.
