@@ -11,19 +11,33 @@ type State = "idle" | "recording" | "transcribing" | "injecting";
 let state: State = "idle";
 let sidecarReady = false;
 
+// The tray renders whatever the state machine says. One source of truth.
+const TRAY_TEXT: Record<State, string> = {
+  idle: "ready — hold F9 to dictate",
+  recording: "listening…",
+  transcribing: "thinking…",
+  injecting: "typing…",
+};
+
+const trayStatus = (text: string) =>
+  invoke("tray_status", { text }).catch(() => {});
+
 function show(next: State) {
   state = next;
   console.log(`[sayit] state: ${next}`);
   document.body.dataset.state = next;
+  trayStatus(sidecarReady ? TRAY_TEXT[next] : "warming up…");
 }
 
 listen("sidecar_ready", () => {
   sidecarReady = true;
   console.log("[sayit] sidecar ready — dictation live");
+  trayStatus(TRAY_TEXT.idle);
 });
 
 listen("pipeline_error", (e) => {
   console.error("[sayit] pipeline error:", e.payload);
+  trayStatus("error — check logs");
 });
 
 // The key's voice. Slots are user-supplied files in soundpack/ — a missing

@@ -11,6 +11,7 @@ mod inject;
 mod sidecar;
 mod sounds;
 mod transcribe;
+mod tray;
 
 use std::sync::Mutex;
 use tauri::Manager;
@@ -41,6 +42,11 @@ fn play_sound(slot: String, sounds: tauri::State<sounds::Sounds>) {
 }
 
 #[tauri::command]
+fn tray_status(app: tauri::AppHandle, text: String) {
+    tray::set_status(&app, &text);
+}
+
+#[tauri::command]
 async fn inject_text(text: String) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || inject::inject(&text))
         .await
@@ -59,7 +65,9 @@ pub fn run() {
         .manage(capture::CaptureState::default())
         .manage(sidecar::Sidecar(Mutex::default()))
         .manage(sounds::start())
+        .manage(tray::Tray::default())
         .setup(|app| {
+            tray::build(app.handle())?;
             let child = sidecar::spawn(app.handle().clone())?;
             *app.state::<sidecar::Sidecar>().0.lock().unwrap() = Some(child);
             println!("[sayit] push-to-talk on {}", hotkey::PUSH_TO_TALK);
@@ -69,7 +77,8 @@ pub fn run() {
             start_capture,
             stop_and_transcribe,
             inject_text,
-            play_sound
+            play_sound,
+            tray_status
         ])
         .build(tauri::generate_context!())
         .expect("error building sayit")

@@ -40,7 +40,7 @@ pub async fn transcribe(samples: Vec<f32>) -> Result<String, String> {
 /// (Discovered when the silence smoke test pasted "[BLANK_AUDIO]" into
 /// Notepad.) Dropping bracketed spans means a silent take collapses to the
 /// empty string, which the coordinator already knows not to inject.
-fn strip_markers(text: &str) -> String {
+pub(crate) fn strip_markers(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut depth = 0u32;
     for c in text.chars() {
@@ -70,4 +70,53 @@ pub fn wav_bytes(samples: &[f32]) -> Result<Vec<u8>, String> {
     }
     writer.finalize().map_err(|e| e.to_string())?;
     Ok(cursor.into_inner())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Regression: the v1 smoke test pasted "[BLANK_AUDIO]" into Notepad.
+    // A silent take must collapse to nothing so the coordinator skips it.
+    #[test]
+    fn blank_audio_marker_collapses_to_empty() {
+        assert_eq!(strip_markers("[BLANK_AUDIO]").trim(), "");
+    }
+
+    #[test]
+    fn markers_are_dropped_but_speech_survives() {
+        assert_eq!(
+            strip_markers("(door slams) hello there [MUSIC] friend").split_whitespace().collect::<Vec<_>>(),
+            vec!["hello", "there", "friend"]
+        );
+    }
+
+    #[test]
+    fn plain_speech_is_untouched() {
+        assert_eq!(strip_markers("no markers here"), "no markers here");
+    }
+
+    #[test]
+    fn unbalanced_close_bracket_does_not_eat_text() {
+        // saturating_sub means a stray "]" can't push depth negative and
+        // swallow the rest of the sentence.
+        assert_eq!(strip_markers("] still here"), "] still here".replace(']', ""));
+    }
+
+    #[test]
+    fn wav_bytes_has_riff_header_and_correct_size() {
+        let wav = wav_bytes(&[0.0f32; 160]).unwrap();
+        assert_eq!(&wav[0..4], b"RIFF");
+        assert_eq!(&wav[8..12], b"WAVE");
+        // 44-byte canonical header + 2 bytes per 16-bit sample.
+        assert_eq!(wav.len(), 44 + 160 * 2);
+    }
+
+    #[test]
+    fn wav_bytes_clamps_out_of_range_samples() {
+        // A sample above 1.0 must clamp, not overflow into garbage.
+        let wav = wav_bytes(&[2.0f32]).unwrap();
+        let sample = i16::from_le_bytes([wav[44], wav[45]]);
+        assert_eq!(sample, i16::MAX);
+    }
 }

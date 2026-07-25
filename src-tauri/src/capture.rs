@@ -121,7 +121,7 @@ pub fn stop(state: &CaptureState) -> Result<Vec<f32>, String> {
 /// ours: each output sample sits between two input samples, weighted by
 /// where it falls. Speech survives 48k→16k this way just fine, and every
 /// line is explainable — which is the point.
-fn resample(input: &[f32], from: u32, to: u32) -> Vec<f32> {
+pub(crate) fn resample(input: &[f32], from: u32, to: u32) -> Vec<f32> {
     if from == to || input.is_empty() {
         return input.to_vec();
     }
@@ -136,4 +136,46 @@ fn resample(input: &[f32], from: u32, to: u32) -> Vec<f32> {
             input[left] * (1.0 - frac) + input[right] * frac
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn same_rate_is_passthrough() {
+        let input = vec![0.1, -0.5, 0.9];
+        assert_eq!(resample(&input, 16_000, 16_000), input);
+    }
+
+    #[test]
+    fn empty_input_stays_empty() {
+        assert!(resample(&[], 48_000, 16_000).is_empty());
+    }
+
+    #[test]
+    fn three_to_one_keeps_every_third_sample() {
+        // 48k→16k is exactly 3:1: output i sits exactly on input 3i,
+        // so interpolation should return those samples untouched.
+        let input: Vec<f32> = (0..12).map(|i| i as f32).collect();
+        let out = resample(&input, 48_000, 16_000);
+        assert_eq!(out.len(), 4);
+        assert_eq!(out, vec![0.0, 3.0, 6.0, 9.0]);
+    }
+
+    #[test]
+    fn output_length_scales_with_ratio() {
+        // One second of 44.1kHz audio must come out as ~one second of 16kHz.
+        let input = vec![0.0; 44_100];
+        let out = resample(&input, 44_100, 16_000);
+        assert!((out.len() as i64 - 16_000).abs() <= 1, "got {}", out.len());
+    }
+
+    #[test]
+    fn interpolates_between_samples() {
+        // 2:1 upsample of a ramp: odd outputs land halfway between inputs.
+        let out = resample(&[0.0, 1.0], 8_000, 16_000);
+        assert_eq!(out.len(), 4);
+        assert!((out[1] - 0.5).abs() < 1e-6);
+    }
 }
