@@ -36,10 +36,10 @@
 
   <!-- the legend: sayit's waveform, five gold bars, mid-word -->
   <g fill="url(#gold)">
-    <rect x="298" y="424" width="84" height="160" rx="42"/>
-    <rect x="422" y="344" width="84" height="320" rx="42"/>
-    <rect x="546" y="272" width="84" height="464" rx="42"/>
-    <rect x="670" y="368" width="84" height="272" rx="42"/>
-    <rect x="794" y="448" width="84" height="112" rx="42"/>
+    <rect x="222" y="424" width="84" height="160" rx="42"/>
+    <rect x="346" y="344" width="84" height="320" rx="42"/>
+    <rect x="470" y="272" width="84" height="464" rx="42"/>
+    <rect x="594" y="368" width="84" height="272" rx="42"/>
+    <rect x="718" y="448" width="84" height="112" rx="42"/>
   </g>
 </svg>
