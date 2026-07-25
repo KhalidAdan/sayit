@@ -11,7 +11,7 @@ the filename is the hook.
 
 Rules:
 
-- WAV or OGG. If both exist for a slot, WAV wins.
+- WAV, OGG, or MP3. First match in that order wins.
 - A missing file is a silent slot. Silence is a legitimate choice — `accept`
   is deliberately empty, because the text appearing *is* the confirmation.
 - Keep them short (under ~300ms) and quiet. `press` plays while the mic is
@@ -19,7 +19,9 @@ Rules:
 - Files load once at app start — after swapping sounds, restart sayit.
 
 Current pack: `refuse.ogg` is "woosh 01" from the GRAND ADVENTURE asset pack
-(Joel Steudler). `press` is vacant pending a sufficiently creamy thock.
+(Joel Steudler). `press` is a NovelKeys Cream switch recording from
+[kbsim](https://github.com/tplai/kbsim) by Thomas Lai (MIT) — the key
+sounds like the keys it lives beside.
 
 License note (checked 2026-07-25): `refuse.ogg` is from a licensed pack
 whose grant covers use "in your games" (Joel Steudler, Grand Adventure).

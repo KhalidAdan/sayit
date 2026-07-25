@@ -1,19 +1,26 @@
-# Release bundling in the cloud: runs on version tags (v0.2.0, ...) or the
-# "Run workflow" button. Uploads the exe + installers as artifacts.
+# The release machine: push a version tag (v0.2.0, ...) and GitHub builds
+# sayit, signs the updater artifacts, and publishes a real Release with
+# installers + latest.json. Running apps see it at next boot (update.rs),
+# stage it silently, and apply it on their next launch.
 #
-# The exe resolves its companions at RUNTIME (paths.rs): env override,
-# next-to-exe, or repo-ancestor walk. To use a CI artifact: drop sayit.exe
-# anywhere inside a clone that has sidecar/ and models/ populated (see
-# docs/sidecar.md), or place those folders next to the exe.
-name: Release build
+# Requires two repo secrets (one-time setup, docs/sidecar.md):
+#   TAURI_SIGNING_PRIVATE_KEY           (contents of ~/.tauri/sayit.key)
+#   TAURI_SIGNING_PRIVATE_KEY_PASSWORD  (contents of ~/.tauri/sayit-key-password.txt)
+#
+# Companions (sidecar/, models/) are NOT in the installer — the exe finds
+# them at runtime (paths.rs): next to the exe or anywhere up-tree of it.
+name: Release
 
 on:
   push:
     tags: ["v*"]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
-  bundle:
+  release:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -29,12 +36,14 @@ jobs:
         with:
           workspaces: src-tauri
 
-      - run: npm run tauri build
-
-      - uses: actions/upload-artifact@v4
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
-          name: sayit-windows
-          path: |
-            src-tauri/target/release/sayit.exe
-            src-tauri/target/release/bundle/nsis/*.exe
-            src-tauri/target/release/bundle/msi/*.msi
+          tagName: ${{ github.ref_name }}
+          releaseName: "sayit ${{ github.ref_name }}"
+          releaseBody: "Hold the key. Say it. First install: see docs/sidecar.md for the whisper-server + model setup. Updates after that are automatic."
+          releaseDraft: false
+          prerelease: false

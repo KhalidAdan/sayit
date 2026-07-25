@@ -43,6 +43,7 @@ const heardNothingRef = Ref.unsafeMake(false);
 const engineRef = Ref.unsafeMake<Engine>("waking"); // boot starts the engine
 const keepAwakeRef = Ref.unsafeMake(false);
 const lastGapMs = Ref.unsafeMake<number | null>(null);
+const updateReadyRef = Ref.unsafeMake<string | null>(null);
 const sleepTimerRef = Ref.unsafeMake<Fiber.RuntimeFiber<void, never> | null>(null);
 
 // ---- the engine's metabolism ----------------------------------------
@@ -108,8 +109,11 @@ const show = (next: State): Effect.Effect<void> =>
         yield* trayStatus("waking up…");
       } else {
         const gap = yield* Ref.get(lastGapMs);
+        const update = yield* Ref.get(updateReadyRef);
+        const base =
+          gap === null ? "ready — hold F9 to dictate" : `ready — last take ${gap}ms`;
         yield* trayStatus(
-          gap === null ? "ready — hold F9 to dictate" : `ready — last take ${gap}ms`,
+          update === null ? base : `${base} · v${update} ready on restart`,
         );
       }
       yield* armSleepTimer;
@@ -244,6 +248,17 @@ listen<boolean>("keep_awake", (e) =>
       } else if ((yield* Ref.get(stateRef)) === "idle") {
         yield* armSleepTimer;
       }
+    }),
+  ),
+);
+
+// An update was downloaded and staged (update.rs); it applies on next
+// launch. Never interrupt the user — just note it in the idle tray text.
+listen<string>("update_installed", (e) =>
+  void Effect.runPromise(
+    Effect.gen(function* () {
+      yield* Ref.set(updateReadyRef, e.payload);
+      if ((yield* Ref.get(stateRef)) === "idle") yield* show("idle");
     }),
   ),
 );

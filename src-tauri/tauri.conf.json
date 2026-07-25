@@ -1,8 +1,16 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "sayit",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "identifier": "dev.khalid.sayit",
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.com/KhalidAdan/sayit/releases/latest/download/latest.json"
+      ],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDI1QjFFMkUzQzJCQ0E2MApSV1JneWlzOExoNWJBbndKMzBOMXdCbmZIS3BaMDhsK0ozOFdOeklsZlBnb1NDSEVlbXo0elhUSgo="
+    }
+  },
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
@@ -42,6 +50,7 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "createUpdaterArtifacts": true,
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

@@ -14,6 +14,7 @@ mod sidecar;
 mod sounds;
 mod transcribe;
 mod tray;
+mod update;
 
 use std::io::Write;
 use std::sync::Mutex;
@@ -150,6 +151,7 @@ pub fn run() {
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,
         ))
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(capture::CaptureState::default())
         .manage(sidecar::Sidecar(Mutex::default()))
         .manage(sidecar::Ready::default())
@@ -161,6 +163,7 @@ pub fn run() {
             *app.state::<MicChoice>().0.lock().unwrap() = saved.microphone.clone();
             tray::build(app.handle(), &saved)?;
             sidecar::start(app.handle())?;
+            tauri::async_runtime::spawn(update::check_and_install(app.handle().clone()));
             println!("[sayit] push-to-talk on {}", hotkey::PUSH_TO_TALK);
             Ok(())
         })

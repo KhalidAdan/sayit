@@ -12,7 +12,7 @@ use std::io::Cursor;
 use std::sync::mpsc::{channel, Sender};
 
 const SLOTS: [&str; 3] = ["press", "refuse", "accept"];
-const EXTENSIONS: [&str; 2] = ["wav", "ogg"]; // wav wins when both exist
+const EXTENSIONS: [&str; 3] = ["wav", "ogg", "mp3"]; // first match wins
 
 pub struct Sounds(Sender<String>);
 
