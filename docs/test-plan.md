@@ -86,6 +86,7 @@ pinned by the layer named:
 | Smoke test pasted live room audio into an unknown focused window | the pipeline working = pasting; containment is mandatory | Layer 2 (containment rule) |
 | PowerShell 5.1 wrote BOM into tauri.conf.json; app wouldn't boot | `Set-Content -Encoding utf8` is not UTF-8 | build docs; avoid PS for config writes |
 | rustc crashed (STATUS_STACK_BUFFER_OVERRUN) on 16GB RAM | full-parallel builds exhaust memory; use `-j 2` | build docs |
+| release build OOM'd even at `-j 2` (LLVM out of memory on the `windows` crate) | opt-level=3 multiplies per-crate memory; release builds want `-j 1` with the dev app and sidecar closed | build docs |
 | Ghost vite/sidecar from a dead session blocked relaunch | dev processes outlive sessions on Windows | Layer 2 pre-flight |
 | First CUDA inference costs ~55s | warmup at boot is mandatory, and is the readiness probe | design (sidecar.rs) + Layer 1 |
 | `sidecar_ready` event fired before webview listeners existed (driver-cached CUDA kernels make later warmups fast); every press refused | push-only readiness is a race — state must also be pullable (`is_ready`) | design (sidecar::Ready) + Layer 2 smoke asserts a press is accepted |

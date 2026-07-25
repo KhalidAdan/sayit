@@ -29,3 +29,5 @@ sidecar/
 
 # This machine's gap dataset (docs/test-plan.md) — data, not source
 gap-log.csv
+# bundler temp redirect (C: is full)
+.build-tmp/
