@@ -67,6 +67,7 @@ fn tray_status(app: tauri::AppHandle, text: String) {
     tray::set_status(&app, &text);
 }
 
+
 #[tauri::command]
 fn is_ready(ready: tauri::State<sidecar::Ready>) -> bool {
     ready.0.load(std::sync::atomic::Ordering::Relaxed)

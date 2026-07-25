@@ -49,7 +49,9 @@ const sleepTimerRef = Ref.unsafeMake<Fiber.RuntimeFiber<void, never> | null>(nul
 
 const cancelSleepTimer = Effect.gen(function* () {
   const fiber = yield* Ref.get(sleepTimerRef);
-  if (fiber) yield* Fiber.interrupt(fiber);
+  // interruptFork, not interrupt: never WAIT for the timer to die — a
+  // press once sat behind a 10-minute uninterruptible sleep this way.
+  if (fiber) yield* Fiber.interruptFork(fiber);
   yield* Ref.set(sleepTimerRef, null);
 });
 
@@ -60,8 +62,14 @@ const armSleepTimer = Effect.gen(function* () {
   const keepAwake = yield* Ref.get(keepAwakeRef);
   const engine = yield* Ref.get(engineRef);
   if (keepAwake || engine !== "ready") return;
+  // Effect.interruptible is load-bearing: this fork happens inside
+  // show("idle"), which runs inside ensuring() — a finalizer, which is
+  // UNINTERRUPTIBLE, and forked fibers inherit that. Without this marker
+  // the sleep cannot be interrupted and cancellation waits out the full
+  // ten minutes (regression ledger: the silent second-press bug).
   const fiber = yield* Effect.sleep(IDLE_SLEEP).pipe(
     Effect.zipRight(cmd("engine_sleep").pipe(Effect.ignore)),
+    Effect.interruptible,
     Effect.forkDaemon,
   );
   yield* Ref.set(sleepTimerRef, fiber);

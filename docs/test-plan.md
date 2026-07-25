@@ -91,6 +91,7 @@ pinned by the layer named:
 | First CUDA inference costs ~55s | warmup at boot is mandatory, and is the readiness probe | design (sidecar.rs) + Layer 1 |
 | `sidecar_ready` event fired before webview listeners existed (driver-cached CUDA kernels make later warmups fast); every press refused | push-only readiness is a race — state must also be pullable (`is_ready`) | design (sidecar::Ready) + Layer 2 smoke asserts a press is accepted |
 | USB mic replug hung a WASAPI stream; unbounded thread join wedged the coordinator forever ("app does not work") | never wait unboundedly at a seam: handshake with timeout on stream start, bounded ack on teardown, Effect.timeout as the coordinator's seatbelt | design (capture.rs handshakes, main.ts timeout) + Layer 3: replug the mic mid-session, verify next take works |
+| Second press after any completed take hung silently: the sleep-timer fiber was forked inside `ensuring()` (a finalizer = uninterruptible region), inherited uninterruptibility, and `Fiber.interrupt` awaited the full 10-minute sleep | fibers forked in finalizers inherit uninterruptible — mark them `Effect.interruptible` AND cancel with `Fiber.interruptFork` (never await a fiber's death on the hot path). Diagnosed by layered probes: hotkey event log → heartbeat → callback probe | design (main.ts) + Layer 2: smoke runs THREE consecutive takes with the engine ready — single-take smoke let this hide for a day |
 
 ## What is deliberately not tested
 
