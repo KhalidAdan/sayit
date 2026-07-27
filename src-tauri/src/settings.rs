@@ -4,6 +4,7 @@
 //! defaults); save never panics (a failed write costs one preference, not
 //! a crash).
 
+use crate::dictionary::Replacement;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 
@@ -15,6 +16,9 @@ pub struct Settings {
     /// Pin the engine awake (skip the idle sleep timer).
     #[serde(default)]
     pub keep_awake: bool,
+    /// The dictionary: applied in order to every transcript, before the paste.
+    #[serde(default)]
+    pub replacements: Vec<Replacement>,
 }
 
 fn path(app: &AppHandle) -> Option<std::path::PathBuf> {

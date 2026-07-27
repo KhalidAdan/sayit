@@ -6,6 +6,7 @@
 //! decisions, the sidecar thinks.
 
 mod capture;
+mod dictionary;
 mod hotkey;
 mod inject;
 mod paths;
@@ -37,6 +38,7 @@ fn start_capture(
 #[tauri::command]
 async fn stop_and_transcribe(
     state: tauri::State<'_, capture::CaptureState>,
+    rules: tauri::State<'_, dictionary::Rules>,
 ) -> Result<String, String> {
     let samples = capture::stop(&state)?;
     println!(
@@ -47,7 +49,13 @@ async fn stop_and_transcribe(
     // even a first-ever CUDA warmup.
     let text = transcribe::transcribe_waiting(samples, std::time::Duration::from_secs(90)).await?;
     println!("[sayit] transcribed: {text:?}");
-    Ok(text)
+    // The dictionary pass: fix the model's known mishearings before anyone
+    // downstream sees the text. In-memory rules, microsecond cost.
+    let corrected = dictionary::apply(&rules.0.lock().unwrap(), &text);
+    if corrected != text {
+        println!("[sayit] dictionary: {corrected:?}");
+    }
+    Ok(corrected)
 }
 
 #[tauri::command]
@@ -158,9 +166,11 @@ pub fn run() {
         .manage(sounds::start())
         .manage(tray::Tray::default())
         .manage(MicChoice(Mutex::new(None)))
+        .manage(dictionary::Rules::default())
         .setup(|app| {
             let saved = settings::load(app.handle());
             *app.state::<MicChoice>().0.lock().unwrap() = saved.microphone.clone();
+            dictionary::init(app.handle(), &saved);
             tray::build(app.handle(), &saved)?;
             sidecar::start(app.handle())?;
             tauri::async_runtime::spawn(update::check_and_install(app.handle().clone()));
@@ -179,7 +189,12 @@ pub fn run() {
             engine_sleep,
             log_gap,
             waveform_show,
-            waveform_hide
+            waveform_hide,
+            dictionary::dictionary_rules,
+            dictionary::dictionary_save,
+            dictionary::dictionary_preview,
+            dictionary::dictionary_show,
+            dictionary::dictionary_hide
         ])
         .build(tauri::generate_context!())
         .expect("error building sayit")

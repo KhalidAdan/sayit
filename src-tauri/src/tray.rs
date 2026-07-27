@@ -75,6 +75,10 @@ pub fn build(app: &AppHandle, saved: &settings::Settings) -> tauri::Result<()> {
         None::<&str>,
     )?;
 
+    // The dictionary: the one piece of sayit that needs a real window —
+    // rows of text want a text editor, not a menu.
+    let dictionary = MenuItem::with_id(app, "dictionary", "Dictionary…", true, None::<&str>)?;
+
     let about = MenuItem::with_id(
         app,
         "about",
@@ -89,6 +93,7 @@ pub fn build(app: &AppHandle, saved: &settings::Settings) -> tauri::Result<()> {
             &status,
             &PredefinedMenuItem::separator(app)?,
             &mics,
+            &dictionary,
             &keep_awake,
             &autostart,
             &PredefinedMenuItem::separator(app)?,
@@ -116,19 +121,19 @@ pub fn build(app: &AppHandle, saved: &settings::Settings) -> tauri::Result<()> {
                 let _ = std::process::Command::new("explorer")
                     .arg("https://github.com/KhalidAdan/sayit")
                     .spawn();
+            } else if id == "dictionary" {
+                crate::dictionary::show(app);
             } else if id == "keepawake" {
                 // The item toggles itself; report the new state upward, let
                 // the coordinator manage its timer, and persist the choice.
+                // Persist by load-and-mutate so the untouched fields (the
+                // dictionary!) survive the write.
                 let on = keep_awake.is_checked().unwrap_or(false);
                 println!("[sayit] keep engine awake: {on}");
                 let _ = app.emit("keep_awake", on);
-                settings::save(
-                    app,
-                    &settings::Settings {
-                        microphone: app.state::<MicChoice>().0.lock().unwrap().clone(),
-                        keep_awake: on,
-                    },
-                );
+                let mut saved = settings::load(app);
+                saved.keep_awake = on;
+                settings::save(app, &saved);
             } else if id == "autostart" {
                 let launcher = app.autolaunch();
                 let flip = match launcher.is_enabled() {
@@ -149,13 +154,9 @@ pub fn build(app: &AppHandle, saved: &settings::Settings) -> tauri::Result<()> {
                 for item in &mic_items {
                     let _ = item.set_checked(item.id().as_ref() == id);
                 }
-                settings::save(
-                    app,
-                    &settings::Settings {
-                        microphone: choice,
-                        keep_awake: keep_awake.is_checked().unwrap_or(false),
-                    },
-                );
+                let mut saved = settings::load(app);
+                saved.microphone = choice;
+                settings::save(app, &saved);
             }
         })
         .build(app)?;

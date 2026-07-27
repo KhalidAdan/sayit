@@ -1,3 +1,4 @@
+import tailwindcss from "@tailwindcss/vite";
 import { defineConfig } from "vite";
 
 // @ts-expect-error process is a nodejs global
@@ -10,12 +11,15 @@ export default defineConfig(async () => ({
   //
   // 1. prevent Vite from obscuring rust errors
   clearScreen: false,
-  // Two pages: the hidden coordinator (index) and the waveform overlay.
+  plugins: [tailwindcss()],
+  // Three pages: the hidden coordinator (index), the waveform overlay,
+  // and the dictionary editor.
   build: {
     rollupOptions: {
       input: {
         main: "index.html",
         waveform: "waveform.html",
+        dictionary: "dictionary.html",
       },
     },
   },

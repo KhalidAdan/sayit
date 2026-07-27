@@ -1,0 +1,14 @@
+/* Tailwind v4 entry for the dictionary editor. The default font-sans
+   stack resolves to Segoe UI Variable on Windows 11 — no webfont, the
+   window must render instantly and offline. */
+@import "tailwindcss";
+
+/* The one text-input treatment, shared by the rule rows (dictionary.ts)
+   and the try-it box (dictionary.html). Layout (width, flex) stays at
+   the call site; looks live here. */
+@utility field {
+  @apply rounded-md bg-white/5 px-2.5 py-1.5 text-sm text-zinc-100
+    -outline-offset-1 inset-ring inset-ring-white/10
+    placeholder:text-zinc-600 focus-visible:outline-2
+    focus-visible:outline-blue-500;
+}

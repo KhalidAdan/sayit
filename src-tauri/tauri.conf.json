@@ -28,6 +28,20 @@
         "skipTaskbar": true
       },
       {
+        "label": "dictionary",
+        "title": "sayit — dictionary",
+        "url": "/dictionary.html",
+        "width": 440,
+        "height": 600,
+        "minWidth": 400,
+        "minHeight": 420,
+        "visible": false,
+        "center": true,
+        "theme": "Dark",
+        "backgroundColor": "#09090b",
+        "skipTaskbar": false
+      },
+      {
         "label": "waveform",
         "title": "sayit waveform",
         "url": "/waveform.html",
