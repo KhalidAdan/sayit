@@ -1,0 +1,4 @@
+/* Tailwind v4 entry for the dictionary editor. The default font-sans
+   stack resolves to Segoe UI Variable on Windows 11 — no webfont, the
+   window must render instantly and offline. */
+@import "tailwindcss";

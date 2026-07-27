@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en" class="scheme-only-dark antialiased">
+  <head>
+    <meta charset="UTF-8" />
+    <title>sayit — dictionary</title>
+    <link rel="stylesheet" href="/src/dictionary.css" />
+  </head>
+  <body class="h-dvh overflow-hidden bg-zinc-950 text-zinc-100">
+    <main class="isolate flex h-full flex-col">
+      <header class="px-5 pt-5">
+        <div class="flex items-baseline justify-between gap-3">
+          <h1 class="text-sm font-semibold">Dictionary</h1>
+          <p
+            id="saved"
+            class="text-xs text-zinc-500 opacity-0 transition-opacity duration-500"
+            aria-live="polite"
+          >
+            Saved
+          </p>
+        </div>
+        <p class="mt-1 text-sm text-pretty text-zinc-400">
+          Teach sayit the words the engine mishears. Fixes land on every take,
+          right before the paste.
+        </p>
+        <p class="mt-1 text-xs text-pretty text-zinc-500">
+          Whole words, any case. Rules apply top to bottom.
+        </p>
+      </header>
+
+      <section class="mt-4 flex min-h-0 flex-1 flex-col px-5" aria-label="Rules">
+        <ul id="rules" role="list" class="flex flex-col gap-2 overflow-y-auto pb-2"></ul>
+        <div class="pt-1 pb-4">
+          <button
+            id="add"
+            type="button"
+            class="flex items-center gap-1.5 rounded-md bg-white/10 py-1.5 pr-3 pl-1.5 text-sm font-medium text-zinc-100 hover:bg-white/15 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-500"
+          >
+            <svg viewBox="0 0 16 16" class="size-4 shrink-0 fill-zinc-400" aria-hidden="true">
+              <path
+                d="M8.75 3.75a.75.75 0 0 0-1.5 0v3.5h-3.5a.75.75 0 0 0 0 1.5h3.5v3.5a.75.75 0 0 0 1.5 0v-3.5h3.5a.75.75 0 0 0 0-1.5h-3.5v-3.5Z"
+              />
+            </svg>
+            Add rule
+          </button>
+        </div>
+      </section>
+
+      <footer class="border-t border-white/5 px-5 pt-4 pb-5">
+        <label for="try" class="text-xs font-medium text-zinc-500">Try it</label>
+        <input
+          id="try"
+          name="try"
+          type="text"
+          placeholder="Type what the engine might hear…"
+          autocomplete="off"
+          spellcheck="false"
+          class="mt-1.5 w-full rounded-md bg-white/5 px-2.5 py-1.5 text-sm text-zinc-100 -outline-offset-1 inset-ring inset-ring-white/10 placeholder:text-zinc-600 focus-visible:outline-2 focus-visible:outline-blue-500"
+        />
+        <div class="mt-2 rounded-md bg-white/4 px-2.5 py-1.5 inset-ring inset-ring-white/5">
+          <p id="preview" class="text-sm text-pretty text-zinc-500">
+            The corrected text appears here.
+          </p>
+        </div>
+      </footer>
+    </main>
+    <script type="module" src="/src/dictionary.ts"></script>
+  </body>
+</html>

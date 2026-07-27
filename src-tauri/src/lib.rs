@@ -6,6 +6,7 @@
 //! decisions, the sidecar thinks.
 
 mod capture;
+mod dictionary;
 mod hotkey;
 mod inject;
 mod paths;
@@ -37,6 +38,7 @@ fn start_capture(
 #[tauri::command]
 async fn stop_and_transcribe(
     state: tauri::State<'_, capture::CaptureState>,
+    rules: tauri::State<'_, dictionary::Rules>,
 ) -> Result<String, String> {
     let samples = capture::stop(&state)?;
     println!(
@@ -47,7 +49,13 @@ async fn stop_and_transcribe(
     // even a first-ever CUDA warmup.
     let text = transcribe::transcribe_waiting(samples, std::time::Duration::from_secs(90)).await?;
     println!("[sayit] transcribed: {text:?}");
-    Ok(text)
+    // The dictionary pass: fix the model's known mishearings before anyone
+    // downstream sees the text. In-memory rules, microsecond cost.
+    let corrected = dictionary::apply(&rules.0.lock().unwrap(), &text);
+    if corrected != text {
+        println!("[sayit] dictionary: {corrected:?}");
+    }
+    Ok(corrected)
 }
 
 #[tauri::command]
@@ -138,6 +146,49 @@ fn waveform_hide(app: tauri::AppHandle) {
     }
 }
 
+/// The dictionary window's rules, for the editor to render.
+#[tauri::command]
+fn dictionary_rules(rules: tauri::State<dictionary::Rules>) -> Vec<settings::Replacement> {
+    rules.0.lock().unwrap().clone()
+}
+
+/// Save the whole rule list: live rules swap instantly (the very next
+/// take uses them), then the settings file catches up on disk.
+#[tauri::command]
+fn dictionary_save(
+    app: tauri::AppHandle,
+    rules: tauri::State<dictionary::Rules>,
+    replacements: Vec<settings::Replacement>,
+) {
+    *rules.0.lock().unwrap() = replacements.clone();
+    let mut saved = settings::load(&app);
+    saved.replacements = replacements;
+    settings::save(&app, &saved);
+}
+
+/// Live preview for the editor's "try it" box. Runs the REAL apply() over
+/// rules the user hasn't saved yet — one algorithm, no TS copy to drift.
+#[tauri::command]
+fn dictionary_preview(replacements: Vec<settings::Replacement>, text: String) -> String {
+    dictionary::apply(&replacements, &text)
+}
+
+/// Opened from the tray. Unlike every other sayit window this one wants
+/// focus — the user is here to type.
+#[tauri::command]
+fn dictionary_show(app: tauri::AppHandle) {
+    dictionary::show(&app);
+}
+
+/// Escape key in the editor. Hide, never destroy — same rule as the
+/// CloseRequested handler in setup().
+#[tauri::command]
+fn dictionary_hide(app: tauri::AppHandle) {
+    if let Some(w) = app.get_webview_window("dictionary") {
+        let _ = w.hide();
+    }
+}
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(
@@ -158,9 +209,22 @@ pub fn run() {
         .manage(sounds::start())
         .manage(tray::Tray::default())
         .manage(MicChoice(Mutex::new(None)))
+        .manage(dictionary::Rules::default())
         .setup(|app| {
             let saved = settings::load(app.handle());
             *app.state::<MicChoice>().0.lock().unwrap() = saved.microphone.clone();
+            *app.state::<dictionary::Rules>().0.lock().unwrap() = saved.replacements.clone();
+            // Closing the dictionary window hides it — the app lives in the
+            // tray; destroying the webview would make reopening impossible.
+            if let Some(w) = app.get_webview_window("dictionary") {
+                let w2 = w.clone();
+                w.on_window_event(move |event| {
+                    if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                        api.prevent_close();
+                        let _ = w2.hide();
+                    }
+                });
+            }
             tray::build(app.handle(), &saved)?;
             sidecar::start(app.handle())?;
             tauri::async_runtime::spawn(update::check_and_install(app.handle().clone()));
@@ -179,7 +243,12 @@ pub fn run() {
             engine_sleep,
             log_gap,
             waveform_show,
-            waveform_hide
+            waveform_hide,
+            dictionary_rules,
+            dictionary_save,
+            dictionary_preview,
+            dictionary_show,
+            dictionary_hide
         ])
         .build(tauri::generate_context!())
         .expect("error building sayit")

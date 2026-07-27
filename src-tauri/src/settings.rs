@@ -7,6 +7,13 @@
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 
+/// One dictionary rule: what the model mishears → what you actually said.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct Replacement {
+    pub from: String,
+    pub to: String,
+}
+
 #[derive(Default, Clone, Serialize, Deserialize)]
 pub struct Settings {
     /// None = system default microphone.
@@ -15,6 +22,9 @@ pub struct Settings {
     /// Pin the engine awake (skip the idle sleep timer).
     #[serde(default)]
     pub keep_awake: bool,
+    /// The dictionary: applied in order to every transcript, before the paste.
+    #[serde(default)]
+    pub replacements: Vec<Replacement>,
 }
 
 fn path(app: &AppHandle) -> Option<std::path::PathBuf> {
