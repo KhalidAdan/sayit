@@ -146,49 +146,6 @@ fn waveform_hide(app: tauri::AppHandle) {
     }
 }
 
-/// The dictionary window's rules, for the editor to render.
-#[tauri::command]
-fn dictionary_rules(rules: tauri::State<dictionary::Rules>) -> Vec<settings::Replacement> {
-    rules.0.lock().unwrap().clone()
-}
-
-/// Save the whole rule list: live rules swap instantly (the very next
-/// take uses them), then the settings file catches up on disk.
-#[tauri::command]
-fn dictionary_save(
-    app: tauri::AppHandle,
-    rules: tauri::State<dictionary::Rules>,
-    replacements: Vec<settings::Replacement>,
-) {
-    *rules.0.lock().unwrap() = replacements.clone();
-    let mut saved = settings::load(&app);
-    saved.replacements = replacements;
-    settings::save(&app, &saved);
-}
-
-/// Live preview for the editor's "try it" box. Runs the REAL apply() over
-/// rules the user hasn't saved yet — one algorithm, no TS copy to drift.
-#[tauri::command]
-fn dictionary_preview(replacements: Vec<settings::Replacement>, text: String) -> String {
-    dictionary::apply(&replacements, &text)
-}
-
-/// Opened from the tray. Unlike every other sayit window this one wants
-/// focus — the user is here to type.
-#[tauri::command]
-fn dictionary_show(app: tauri::AppHandle) {
-    dictionary::show(&app);
-}
-
-/// Escape key in the editor. Hide, never destroy — same rule as the
-/// CloseRequested handler in setup().
-#[tauri::command]
-fn dictionary_hide(app: tauri::AppHandle) {
-    if let Some(w) = app.get_webview_window("dictionary") {
-        let _ = w.hide();
-    }
-}
-
 pub fn run() {
     tauri::Builder::default()
         .plugin(
@@ -213,18 +170,7 @@ pub fn run() {
         .setup(|app| {
             let saved = settings::load(app.handle());
             *app.state::<MicChoice>().0.lock().unwrap() = saved.microphone.clone();
-            *app.state::<dictionary::Rules>().0.lock().unwrap() = saved.replacements.clone();
-            // Closing the dictionary window hides it — the app lives in the
-            // tray; destroying the webview would make reopening impossible.
-            if let Some(w) = app.get_webview_window("dictionary") {
-                let w2 = w.clone();
-                w.on_window_event(move |event| {
-                    if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                        api.prevent_close();
-                        let _ = w2.hide();
-                    }
-                });
-            }
+            dictionary::init(app.handle(), &saved);
             tray::build(app.handle(), &saved)?;
             sidecar::start(app.handle())?;
             tauri::async_runtime::spawn(update::check_and_install(app.handle().clone()));
@@ -244,11 +190,11 @@ pub fn run() {
             log_gap,
             waveform_show,
             waveform_hide,
-            dictionary_rules,
-            dictionary_save,
-            dictionary_preview,
-            dictionary_show,
-            dictionary_hide
+            dictionary::dictionary_rules,
+            dictionary::dictionary_save,
+            dictionary::dictionary_preview,
+            dictionary::dictionary_show,
+            dictionary::dictionary_hide
         ])
         .build(tauri::generate_context!())
         .expect("error building sayit")

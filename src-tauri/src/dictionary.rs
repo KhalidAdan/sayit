@@ -3,28 +3,97 @@
 //! rule maps a misheard phrase to the exact text the user wanted, applied
 //! to the transcript in the instant between transcription and paste.
 //!
+//! This module owns the whole feature: the rule type, the matcher, the
+//! live in-memory rules, and the editor window's commands. settings.rs
+//! only persists it; lib.rs only registers it.
+//!
 //! Hand-rolled like settings.rs: no regex crate for three string rules.
 //! Matching is case-insensitive ("Clod", "clod", "CLOD" all hit one rule)
 //! and word-boundary aware (a rule for "cat" must never fire inside
 //! "category"). Cost is microseconds against the paste's own 60ms settle
 //! delay — the edit step is free.
 
-use crate::settings::Replacement;
+use crate::settings;
+use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
 use tauri::Manager;
+
+/// One dictionary rule: what the model mishears → what you actually said.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct Replacement {
+    pub from: String,
+    pub to: String,
+}
 
 /// The live rules, held in memory so a take never touches the disk.
 /// Loaded from settings.json at boot; replaced whole when the user edits.
 #[derive(Default)]
 pub struct Rules(pub Mutex<Vec<Replacement>>);
 
+/// Boot wiring: saved rules into managed state, and the editor window's
+/// close button turned into hide — the app lives in the tray; destroying
+/// the webview would make reopening impossible.
+pub fn init(app: &tauri::AppHandle, saved: &settings::Settings) {
+    *app.state::<Rules>().0.lock().unwrap() = saved.replacements.clone();
+    if let Some(w) = app.get_webview_window("dictionary") {
+        let w2 = w.clone();
+        w.on_window_event(move |event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                let _ = w2.hide();
+            }
+        });
+    }
+}
+
 /// Show + focus the editor window. Unlike the waveform, this window wants
-/// focus — the user is here to type. Closing it hides it (lib.rs handles
-/// CloseRequested) so reopening from the tray is instant.
+/// focus — the user is here to type. Called from the tray and the
+/// `dictionary_show` command.
 pub fn show(app: &tauri::AppHandle) {
     if let Some(w) = app.get_webview_window("dictionary") {
         let _ = w.show();
         let _ = w.set_focus();
+    }
+}
+
+/// The editor's read: current rules, for rendering the rows.
+#[tauri::command]
+pub fn dictionary_rules(rules: tauri::State<Rules>) -> Vec<Replacement> {
+    rules.0.lock().unwrap().clone()
+}
+
+/// Save the whole rule list: live rules swap instantly (the very next
+/// take uses them), then the settings file catches up on disk.
+#[tauri::command]
+pub fn dictionary_save(
+    app: tauri::AppHandle,
+    rules: tauri::State<Rules>,
+    replacements: Vec<Replacement>,
+) {
+    *rules.0.lock().unwrap() = replacements.clone();
+    let mut saved = settings::load(&app);
+    saved.replacements = replacements;
+    settings::save(&app, &saved);
+}
+
+/// Live preview for the editor's "try it" box. Runs the REAL apply() over
+/// rules the user hasn't saved yet — one algorithm, no TS copy to drift.
+#[tauri::command]
+pub fn dictionary_preview(replacements: Vec<Replacement>, text: String) -> String {
+    apply(&replacements, &text)
+}
+
+#[tauri::command]
+pub fn dictionary_show(app: tauri::AppHandle) {
+    show(&app);
+}
+
+/// Escape key in the editor. Hide, never destroy — same rule as the
+/// CloseRequested handler in init().
+#[tauri::command]
+pub fn dictionary_hide(app: tauri::AppHandle) {
+    if let Some(w) = app.get_webview_window("dictionary") {
+        let _ = w.hide();
     }
 }
 

@@ -74,23 +74,18 @@ function previewSoon() {
 
 // ---- rows -----------------------------------------------------------
 
-const INPUT_CLASSES =
-  "min-w-0 flex-1 rounded-md bg-white/5 px-2.5 py-1.5 text-sm text-zinc-100 " +
-  "-outline-offset-1 inset-ring inset-ring-white/10 placeholder:text-zinc-600 " +
-  "focus-visible:outline-2 focus-visible:outline-blue-500";
-
 function rowEl(rule: Rule, index: number): HTMLLIElement {
   const li = document.createElement("li");
   li.className = "flex items-center gap-2";
   li.innerHTML = `
     <input name="from" aria-label="Misheard word" placeholder="misheard"
-      autocomplete="off" spellcheck="false" class="${INPUT_CLASSES}" />
+      autocomplete="off" spellcheck="false" class="field min-w-0 flex-1" />
     <svg viewBox="0 0 16 16" class="size-4 shrink-0 fill-zinc-600" aria-hidden="true">
       <path fill-rule="evenodd" clip-rule="evenodd"
         d="M2 8a.75.75 0 0 1 .75-.75h8.69L8.22 4.03a.75.75 0 0 1 1.06-1.06l4.5 4.5a.75.75 0 0 1 0 1.06l-4.5 4.5a.75.75 0 0 1-1.06-1.06l3.22-3.22H2.75A.75.75 0 0 1 2 8Z" />
     </svg>
     <input name="to" aria-label="Replace with" placeholder="corrected"
-      autocomplete="off" spellcheck="false" class="${INPUT_CLASSES}" />
+      autocomplete="off" spellcheck="false" class="field min-w-0 flex-1" />
     <button type="button" aria-label="Delete rule"
       class="group relative shrink-0 rounded-md p-1.5 hover:bg-white/5 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-500">
       <svg viewBox="0 0 16 16" class="size-4 fill-zinc-500 group-hover:fill-zinc-300" aria-hidden="true">

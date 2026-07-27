@@ -4,15 +4,9 @@
 //! defaults); save never panics (a failed write costs one preference, not
 //! a crash).
 
+use crate::dictionary::Replacement;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
-
-/// One dictionary rule: what the model mishears → what you actually said.
-#[derive(Clone, Serialize, Deserialize)]
-pub struct Replacement {
-    pub from: String,
-    pub to: String,
-}
 
 #[derive(Default, Clone, Serialize, Deserialize)]
 pub struct Settings {
