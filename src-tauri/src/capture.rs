@@ -197,18 +197,30 @@ pub fn stop(state: &CaptureState) -> Result<Vec<f32>, String> {
     // Wait for teardown, but only briefly: a hung device must cost us a
     // zombie thread at worst, never a wedged pipeline. The session was
     // already take()n above, so the next press starts clean regardless.
+    let t = std::time::Instant::now();
     match session.ack.recv_timeout(std::time::Duration::from_secs(2)) {
         Ok(()) => {
             let _ = session.thread.join(); // ack sent: join returns promptly
         }
         Err(_) => eprintln!("[capture] mic teardown hung; proceeding with buffered audio"),
     }
+    let teardown_ms = t.elapsed().as_millis();
     let recorded = std::mem::take(&mut *session.samples.lock().unwrap());
     // Diagnostic breadcrumb: a "working" mic that delivers silence (seen
     // after a USB replug) shows up here as a near-zero peak on a real take.
     let peak = recorded.iter().fold(0f32, |m, s| m.max(s.abs()));
     println!("[capture] take peak level: {peak:.4}");
-    Ok(resample(&recorded, session.source_rate, TARGET_SAMPLE_RATE))
+    let t = std::time::Instant::now();
+    let out = resample(&recorded, session.source_rate, TARGET_SAMPLE_RATE);
+    println!(
+        "[timing] capture stop: teardown {teardown_ms}ms · resample {}ms ({} samples @{}Hz → {} @{}Hz)",
+        t.elapsed().as_millis(),
+        recorded.len(),
+        session.source_rate,
+        out.len(),
+        TARGET_SAMPLE_RATE
+    );
+    Ok(out)
 }
 
 /// Linear-interpolation resampler. Crude by DSP standards, transparent by

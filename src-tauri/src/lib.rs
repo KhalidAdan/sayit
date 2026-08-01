@@ -35,31 +35,77 @@ fn start_capture(
     capture::start(&state, &app, preferred)
 }
 
+/// One take's text plus where every one of its milliseconds went. The
+/// coordinator merges this with its own clocks and the inject timing into
+/// a single per-take breakdown (console + gap-log.csv).
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Take {
+    text: String,
+    /// Length of the recorded audio itself — the denominator every other
+    /// number should be read against.
+    audio_ms: u64,
+    /// capture::stop — mic teardown wait + resample.
+    stop_ms: u64,
+    engine_wait_ms: u64,
+    attempts: u32,
+    wav_ms: u64,
+    http_ms: u64,
+    parse_ms: u64,
+    /// Dictionary pass, in MICROseconds — logged to prove it stays free.
+    dict_us: u64,
+}
+
 #[tauri::command]
 async fn stop_and_transcribe(
     state: tauri::State<'_, capture::CaptureState>,
     rules: tauri::State<'_, dictionary::Rules>,
-) -> Result<String, String> {
+) -> Result<Take, String> {
+    let t = std::time::Instant::now();
     let samples = capture::stop(&state)?;
+    let stop_ms = t.elapsed().as_millis() as u64;
+    let audio_ms = samples.len() as u64 * 1000 / capture::TARGET_SAMPLE_RATE as u64;
     println!(
         "[sayit] captured {:.1}s of audio",
         samples.len() as f32 / capture::TARGET_SAMPLE_RATE as f32
     );
     // Patient: if the take raced an engine wake, wait for it. 90s covers
     // even a first-ever CUDA warmup.
-    let text = transcribe::transcribe_waiting(samples, std::time::Duration::from_secs(90)).await?;
+    let (text, timing) =
+        transcribe::transcribe_waiting(samples, std::time::Duration::from_secs(90)).await?;
     println!("[sayit] transcribed: {text:?}");
     // The dictionary pass: fix the model's known mishearings before anyone
     // downstream sees the text. In-memory rules, microsecond cost.
+    let t = std::time::Instant::now();
     let corrected = dictionary::apply(&rules.0.lock().unwrap(), &text);
+    let dict_us = t.elapsed().as_micros() as u64;
     if corrected != text {
         println!("[sayit] dictionary: {corrected:?}");
     }
-    Ok(corrected)
+    println!(
+        "[timing] stop_and_transcribe: stop {stop_ms}ms · wait {}ms · wav {}ms · inference {}ms · \
+         parse {}ms · dict {dict_us}µs — for {:.1}s of audio",
+        timing.engine_wait_ms,
+        timing.wav_ms,
+        timing.http_ms,
+        timing.parse_ms,
+        audio_ms as f32 / 1000.0
+    );
+    Ok(Take {
+        text: corrected,
+        audio_ms,
+        stop_ms,
+        engine_wait_ms: timing.engine_wait_ms,
+        attempts: timing.attempts,
+        wav_ms: timing.wav_ms,
+        http_ms: timing.http_ms,
+        parse_ms: timing.parse_ms,
+        dict_us,
+    })
 }
 
 #[tauri::command]
-async fn inject_text(text: String) -> Result<(), String> {
+async fn inject_text(text: String) -> Result<inject::InjectTiming, String> {
     tauri::async_runtime::spawn_blocking(move || inject::inject(&text))
         .await
         .map_err(|e| e.to_string())?
@@ -99,13 +145,52 @@ fn engine_sleep(app: tauri::AppHandle) {
     sidecar::sleep(&app);
 }
 
-/// The gap, measured, not vibed: release-to-text-landed per take. Printed
-/// for the log and appended to a CSV in the app config dir (next to
-/// settings.json — it's this machine's diary) so v3's entry gate has a
-/// dataset.
+/// One take's full timing breakdown, assembled by the coordinator (it's
+/// the only place all three clocks meet: key-up stamp, Rust stage timings,
+/// inject timings). All milliseconds except dict_us.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GapRow {
+    /// Key-up → inject returned. The number the old log recorded.
+    total_ms: u64,
+    /// Key-up → text visible on screen. The gap the user actually feels.
+    felt_ms: u64,
+    chars: usize,
+    audio_ms: u64,
+    /// Key-up OS event → coordinator handler entry (webview event hop).
+    /// i64: two clocks are subtracted, so rounding may make it -1.
+    dispatch_ms: i64,
+    /// Coordinator housekeeping around the two pipeline commands: the
+    /// show() calls' tray + waveform IPC, before stop_and_transcribe and
+    /// between it and inject_text.
+    pre_ms: u64,
+    stop_ms: u64,
+    engine_wait_ms: u64,
+    wav_ms: u64,
+    http_ms: u64,
+    parse_ms: u64,
+    dict_us: u64,
+    /// Invoke round-trip minus the Rust-side accounted stages: the
+    /// webview↔Rust IPC toll, both commands combined.
+    ipc_ms: u64,
+    inject_visible_ms: u64,
+    inject_total_ms: u64,
+}
+
+const GAP_HEADER: &str = "unix_ts,total_ms,felt_ms,chars,audio_ms,dispatch_ms,pre_ms,stop_ms,\
+engine_wait_ms,wav_ms,http_ms,parse_ms,dict_us,ipc_ms,inject_visible_ms,inject_total_ms";
+
+/// The gap, measured, not vibed — now itemized: release-to-text-landed per
+/// take, split across every stage, appended to a CSV in the app config dir
+/// (next to settings.json — it's this machine's diary) so tuning has a
+/// dataset. A pre-breakdown log file (three columns) is shelved aside as
+/// gap-log-v1.csv rather than mixed into the new schema.
 #[tauri::command]
-fn log_gap(app: tauri::AppHandle, total_ms: u64, chars: usize) {
-    println!("[sayit] gap: {total_ms}ms for {chars} chars");
+fn log_gap(app: tauri::AppHandle, row: GapRow) {
+    println!(
+        "[sayit] gap: felt {}ms (total {}ms) for {} chars",
+        row.felt_ms, row.total_ms, row.chars
+    );
     let Ok(dir) = app.path().app_config_dir() else { return };
     let _ = std::fs::create_dir_all(&dir);
     let csv = dir.join("gap-log.csv");
@@ -113,12 +198,57 @@ fn log_gap(app: tauri::AppHandle, total_ms: u64, chars: usize) {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
+
+    // Schema check: an existing file whose header isn't ours gets renamed,
+    // not appended to — mixed-width rows would poison the dataset.
+    if let Ok(existing) = std::fs::File::open(&csv) {
+        use std::io::BufRead;
+        let first = std::io::BufReader::new(existing)
+            .lines()
+            .next()
+            .and_then(|l| l.ok())
+            .unwrap_or_default();
+        if first.trim() != GAP_HEADER {
+            let mut shelf = dir.join("gap-log-v1.csv");
+            if shelf.exists() {
+                shelf = dir.join(format!("gap-log-v1-{stamp}.csv"));
+            }
+            match std::fs::rename(&csv, &shelf) {
+                Ok(()) => println!("[sayit] gap-log: old schema shelved as {}", shelf.display()),
+                Err(e) => {
+                    // Never risk a poisoned dataset: better to drop one row
+                    // than append 16 columns under a 3-column header.
+                    eprintln!("[sayit] gap-log: can't shelve old log ({e}); skipping this row");
+                    return;
+                }
+            }
+        }
+    }
+
     let new = !csv.exists();
     if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(csv) {
         if new {
-            let _ = writeln!(file, "unix_ts,total_ms,chars");
+            let _ = writeln!(file, "{GAP_HEADER}");
         }
-        let _ = writeln!(file, "{stamp},{total_ms},{chars}");
+        let _ = writeln!(
+            file,
+            "{stamp},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
+            row.total_ms,
+            row.felt_ms,
+            row.chars,
+            row.audio_ms,
+            row.dispatch_ms,
+            row.pre_ms,
+            row.stop_ms,
+            row.engine_wait_ms,
+            row.wav_ms,
+            row.http_ms,
+            row.parse_ms,
+            row.dict_us,
+            row.ipc_ms,
+            row.inject_visible_ms,
+            row.inject_total_ms
+        );
     }
 }
 

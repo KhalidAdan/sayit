@@ -54,7 +54,7 @@ pub fn start(app: &AppHandle) -> Result<(), String> {
 
     println!("[sayit] engine waking");
     let _ = app.emit("engine_waking", ());
-    tauri::async_runtime::spawn(warmup(app.clone()));
+    tauri::async_runtime::spawn(warmup(app.clone(), std::time::Instant::now()));
     Ok(())
 }
 
@@ -73,16 +73,20 @@ pub fn sleep(app: &AppHandle) {
 /// pays the ~55s CUDA kernel-init cost (measured; docs/sidecar.md) so the
 /// user never does; on later wakes it's seconds. Success doubles as the
 /// readiness probe: `sidecar_ready` means "warm and listening".
-async fn warmup(app: AppHandle) {
+async fn warmup(app: AppHandle, spawned: std::time::Instant) {
     let silence = vec![0.0f32; capture::TARGET_SAMPLE_RATE as usize / 2];
-    for _ in 1..=60u32 {
+    for probe in 1..=60u32 {
         // The engine may have been put back to sleep mid-warmup; stop probing.
         if app.state::<Sidecar>().0.lock().unwrap().is_none() {
             return;
         }
         match transcribe::transcribe(silence.clone()).await {
             Ok(_) => {
-                println!("[sayit] engine warm and ready");
+                println!(
+                    "[timing] engine warm and ready in {:.1}s ({probe} probe{})",
+                    spawned.elapsed().as_secs_f32(),
+                    if probe == 1 { "" } else { "s" }
+                );
                 app.state::<Ready>().0.store(true, Ordering::Relaxed);
                 let _ = app.emit("sidecar_ready", ());
                 return;

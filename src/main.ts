@@ -16,6 +16,32 @@ import { Clock, Data, Duration, Effect, Fiber, Ref } from "effect";
 type State = "idle" | "recording" | "transcribing" | "injecting";
 type Engine = "sleeping" | "waking" | "ready";
 
+// What stop_and_transcribe returns now: the text plus where the Rust side
+// spent its time. Mirrors `Take` in lib.rs (serde renames to camelCase).
+type Take = {
+  text: string;
+  audioMs: number;
+  stopMs: number;
+  engineWaitMs: number;
+  attempts: number;
+  wavMs: number;
+  httpMs: number;
+  parseMs: number;
+  dictUs: number;
+};
+
+// Mirrors `InjectTiming` in inject.rs. visibleMs is the moment the text is
+// on screen; everything after is clipboard-restore politeness.
+type InjectTiming = {
+  clipboardSaveMs: number;
+  clipboardSetMs: number;
+  settleMs: number;
+  keystrokeMs: number;
+  visibleMs: number;
+  restoreWaitMs: number;
+  totalMs: number;
+};
+
 /// After this much idle, the engine sleeps and ~500MB of VRAM comes home.
 const IDLE_SLEEP = Duration.minutes(10);
 
@@ -154,23 +180,83 @@ const onPushStarted = Effect.gen(function* () {
 
 // Key came up. stop_and_transcribe is patient on the Rust side: if this
 // take raced an engine wake, it waits for warmth instead of failing.
-const onPushFinished = Effect.gen(function* () {
+// keyUpMs is the OS-event wall-clock stamp from hotkey.rs — the take's
+// true t0, from before the event even reached this webview.
+const onPushFinished = (keyUpMs: number) => Effect.gen(function* () {
   if ((yield* Ref.get(stateRef)) !== "recording") return;
-  const t0 = yield* Clock.currentTimeMillis;
+  const tEntry = yield* Clock.currentTimeMillis;
+  const t0 = keyUpMs > 0 ? keyUpMs : tEntry;
   yield* show("transcribing");
   // Timeout is the coordinator's own seatbelt: whatever the Rust side
   // does — hung device, dead engine — this state machine returns to idle.
   // 100s clears transcribe_waiting's 90s patience with room to spare.
-  const text = yield* cmd<string>("stop_and_transcribe").pipe(
+  const tCall = yield* Clock.currentTimeMillis;
+  const take = yield* cmd<Take>("stop_and_transcribe").pipe(
     Effect.timeout(Duration.seconds(100)),
   );
-  if (text.trim().length > 0) {
+  const tBack = yield* Clock.currentTimeMillis;
+  if (take.text.trim().length > 0) {
     yield* show("injecting");
-    yield* cmd("inject_text", { text });
+    const tInject = yield* Clock.currentTimeMillis;
+    const inject = yield* cmd<InjectTiming>("inject_text", { text: take.text });
+    const tDone = yield* Clock.currentTimeMillis;
     yield* sound("accept");
-    const gap = Number((yield* Clock.currentTimeMillis) - t0);
-    yield* Ref.set(lastGapMs, gap);
-    yield* cmd("log_gap", { totalMs: gap, chars: text.length }).pipe(Effect.ignore);
+
+    // Three clocks meet here: the OS stamp, this webview, the Rust stages.
+    const totalMs = tDone - t0; // what the old log called "the gap"
+    // The user stopped waiting when the text appeared — before inject's
+    // clipboard-restore wait. THIS is the gap the north star talks about.
+    const feltMs = totalMs - (inject.totalMs - inject.visibleMs);
+    const dispatchMs = tEntry - t0;
+    // Coordinator housekeeping: tray + waveform IPC around the commands.
+    const preMs = tCall - tEntry + (tInject - tBack);
+    const rustAccounted =
+      take.stopMs + take.engineWaitMs + take.wavMs + take.httpMs + take.parseMs;
+    // What the invoke round-trips cost beyond the work they carried.
+    const ipcMs =
+      Math.max(0, tBack - tCall - rustAccounted) +
+      Math.max(0, tDone - tInject - inject.totalMs);
+
+    const pct = (ms: number) => `${Math.round((ms / feltMs) * 100)}%`.padStart(4);
+    const row = (label: string, ms: number, note = "") =>
+      `[gap]   ${label.padEnd(13)}${String(ms).padStart(6)}ms ${pct(ms)}  ${note}`;
+    console.log(
+      [
+        `[gap] ━━ felt ${feltMs}ms · total ${totalMs}ms · ${(take.audioMs / 1000).toFixed(1)}s audio · ${take.text.length} chars`,
+        row("dispatch", dispatchMs, "key-up event → coordinator"),
+        row("housekeeping", preMs, "tray + waveform IPC"),
+        row("mic stop", take.stopMs, "teardown + resample"),
+        row("engine wait", take.engineWaitMs, `${take.attempts} attempt${take.attempts === 1 ? "" : "s"}`),
+        row("wav encode", take.wavMs),
+        row("inference", take.httpMs, "whisper, http round-trip"),
+        row("parse", take.parseMs),
+        row("dictionary", Math.round(take.dictUs / 1000), `(${take.dictUs}µs)`),
+        row("ipc toll", ipcMs, "webview ↔ rust, both commands"),
+        row("inject", inject.visibleMs, "clipboard + settle + ctrl-v → VISIBLE"),
+        `[gap]   (+${inject.totalMs - inject.visibleMs}ms clipboard restore after the text landed — excluded from felt)`,
+      ].join("\n"),
+    );
+
+    yield* Ref.set(lastGapMs, feltMs);
+    yield* cmd("log_gap", {
+      row: {
+        totalMs,
+        feltMs,
+        chars: take.text.length,
+        audioMs: take.audioMs,
+        dispatchMs,
+        preMs,
+        stopMs: take.stopMs,
+        engineWaitMs: take.engineWaitMs,
+        wavMs: take.wavMs,
+        httpMs: take.httpMs,
+        parseMs: take.parseMs,
+        dictUs: take.dictUs,
+        ipcMs,
+        injectVisibleMs: inject.visibleMs,
+        injectTotalMs: inject.totalMs,
+      },
+    }).pipe(Effect.ignore);
   } else {
     // An empty take must be FELT: woosh now, tray explains via the
     // heardNothing flag when ensuring() returns us to idle.
@@ -212,8 +298,12 @@ void Effect.runPromise(
   }).pipe(Effect.ignore),
 );
 
-listen("push_started", () => void Effect.runPromise(onPushStarted));
-listen("push_finished", () => void Effect.runPromise(onPushFinished));
+// Payloads are wall-clock stamps from hotkey.rs, taken at the OS event.
+listen<number>("push_started", (e) => {
+  if (e.payload > 0) console.log(`[gap] press dispatch: ${Date.now() - e.payload}ms`);
+  void Effect.runPromise(onPushStarted);
+});
+listen<number>("push_finished", (e) => void Effect.runPromise(onPushFinished(e.payload)));
 listen("sidecar_ready", () => void Effect.runPromise(becomeReady));
 
 listen("engine_waking", () =>

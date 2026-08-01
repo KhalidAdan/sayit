@@ -8,15 +8,48 @@ use std::time::{Duration, Instant};
 
 pub const SIDECAR_PORT: u16 = 8642;
 
+/// Where this stage's milliseconds went. Filled by `transcribe`, extended
+/// with the engine wait by `transcribe_waiting`, and carried all the way up
+/// to the coordinator so gap-log.csv can tell inference apart from plumbing.
+#[derive(Debug, Clone, Copy, Default, serde::Serialize)]
+pub struct Timing {
+    /// Spent retrying while the engine was still waking (includes the WAV
+    /// encodes of failed attempts). 0 on a warm take.
+    pub engine_wait_ms: u64,
+    /// Attempts made. 1 = the engine was warm and answered first try.
+    pub attempts: u32,
+    /// Encoding samples into an in-memory WAV.
+    pub wav_ms: u64,
+    /// POST to localhost → full response body received. This IS whisper
+    /// inference; localhost HTTP overhead is too small to see next to it.
+    pub http_ms: u64,
+    /// JSON field extraction + marker stripping + whitespace normalization.
+    pub parse_ms: u64,
+}
+
 /// Like `transcribe`, but patient: while the engine is waking (connection
 /// refused), retry every 500ms until the deadline. The user's take is
 /// often the very first request after a wake — audio must never be lost
 /// to a nap the app itself decided to take.
-pub async fn transcribe_waiting(samples: Vec<f32>, deadline: Duration) -> Result<String, String> {
+pub async fn transcribe_waiting(
+    samples: Vec<f32>,
+    deadline: Duration,
+) -> Result<(String, Timing), String> {
     let started = Instant::now();
+    let mut attempts = 0u32;
     loop {
+        attempts += 1;
+        // Everything before the attempt that succeeds is "engine wait".
+        let waited_ms = started.elapsed().as_millis() as u64;
         match transcribe(samples.clone()).await {
-            Ok(text) => return Ok(text),
+            Ok((text, mut timing)) => {
+                timing.engine_wait_ms = waited_ms;
+                timing.attempts = attempts;
+                if attempts > 1 {
+                    println!("[timing] engine wait: {waited_ms}ms across {attempts} attempts");
+                }
+                return Ok((text, timing));
+            }
             Err(e) if started.elapsed() < deadline => {
                 let _ = e; // engine still waking; keep trying
                 tokio::time::sleep(Duration::from_millis(500)).await;
@@ -26,9 +59,16 @@ pub async fn transcribe_waiting(samples: Vec<f32>, deadline: Duration) -> Result
     }
 }
 
-/// 16kHz mono samples in, whitespace-normalized text out.
-pub async fn transcribe(samples: Vec<f32>) -> Result<String, String> {
+/// 16kHz mono samples in, whitespace-normalized text out — plus where the
+/// time went.
+pub async fn transcribe(samples: Vec<f32>) -> Result<(String, Timing), String> {
+    let mut timing = Timing::default();
+
+    let t = Instant::now();
     let wav = wav_bytes(&samples)?;
+    timing.wav_ms = t.elapsed().as_millis() as u64;
+    let wav_kb = wav.len() / 1024;
+
     let part = reqwest::multipart::Part::bytes(wav)
         .file_name("audio.wav")
         .mime_str("audio/wav")
@@ -37,21 +77,31 @@ pub async fn transcribe(samples: Vec<f32>) -> Result<String, String> {
         .part("file", part)
         .text("response_format", "json");
 
+    let t = Instant::now();
     let response = reqwest::Client::new()
         .post(format!("http://127.0.0.1:{SIDECAR_PORT}/inference"))
         .multipart(form)
         .send()
         .await
         .map_err(|e| format!("sidecar unreachable: {e}"))?;
-
+    // Reading the body is still the network; it belongs to http_ms.
     let body: serde_json::Value = response.json().await.map_err(|e| e.to_string())?;
-    let text = body["text"].as_str().unwrap_or_default();
+    timing.http_ms = t.elapsed().as_millis() as u64;
 
+    let t = Instant::now();
+    let text = body["text"].as_str().unwrap_or_default();
     // The server line-breaks mid-sentence; pasting wants a single line.
-    Ok(strip_markers(text)
+    let text = strip_markers(text)
         .split_whitespace()
         .collect::<Vec<_>>()
-        .join(" "))
+        .join(" ");
+    timing.parse_ms = t.elapsed().as_millis() as u64;
+
+    println!(
+        "[timing] transcribe: wav {}ms · inference(http) {}ms · parse {}ms ({wav_kb} KB wav)",
+        timing.wav_ms, timing.http_ms, timing.parse_ms
+    );
+    Ok((text, timing))
 }
 
 /// Whisper annotates non-speech in brackets — "[BLANK_AUDIO]", "[MUSIC]",

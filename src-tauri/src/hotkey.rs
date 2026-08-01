@@ -15,16 +15,27 @@ pub const PUSH_TO_TALK: &str = "F9";
 /// with no preceding press).
 static HELD: AtomicBool = AtomicBool::new(false);
 
+/// Wall-clock ms, stamped at the OS event and carried in the payload so
+/// the coordinator can measure how long the event took to cross into the
+/// webview. Both sides read the same system clock, so the subtraction is
+/// honest to within a millisecond.
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
 pub fn on_shortcut(app: &AppHandle, state: ShortcutState) {
     match state {
         ShortcutState::Pressed => {
             if !HELD.swap(true, Ordering::SeqCst) {
-                let _ = app.emit("push_started", ());
+                let _ = app.emit("push_started", now_ms());
             }
         }
         ShortcutState::Released => {
             if HELD.swap(false, Ordering::SeqCst) {
-                let _ = app.emit("push_finished", ());
+                let _ = app.emit("push_finished", now_ms());
             }
         }
     }
