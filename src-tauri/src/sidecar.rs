@@ -26,9 +26,6 @@ pub struct Sidecar(pub Mutex<Option<Child>>);
 /// engine is left alone, so the coordinator can call this on every press
 /// without thinking.
 pub fn start(app: &AppHandle) -> Result<(), String> {
-    use std::os::windows::process::CommandExt;
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-
     let sidecar = app.state::<Sidecar>();
     let mut guard = sidecar.0.lock().unwrap();
     if guard.is_some() {
@@ -39,14 +36,34 @@ pub fn start(app: &AppHandle) -> Result<(), String> {
     // layout) — see paths.rs. The same exe works everywhere.
     let server = crate::paths::sidecar_exe()?;
     let model = crate::paths::model()?;
-    let child = Command::new(server)
+    let mut command = Command::new(server);
+    command
         .arg("-m")
         .arg(&model)
         .arg("--host")
         .arg("127.0.0.1")
         .arg("--port")
-        .arg(transcribe::SIDECAR_PORT.to_string())
-        .creation_flags(CREATE_NO_WINDOW)
+        .arg(transcribe::SIDECAR_PORT.to_string());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::process::CommandExt;
+        // A crashed parent must not leave a server owning the port and VRAM.
+        unsafe {
+            command.pre_exec(|| {
+                if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM) == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+    }
+    let child = command
         .spawn()
         .map_err(|e| format!("failed to spawn whisper-server: {e}"))?;
     *guard = Some(child);
@@ -63,10 +80,19 @@ pub fn start(app: &AppHandle) -> Result<(), String> {
 pub fn sleep(app: &AppHandle) {
     if let Some(mut child) = app.state::<Sidecar>().0.lock().unwrap().take() {
         let _ = child.kill();
+        let _ = child.wait();
         app.state::<Ready>().0.store(false, Ordering::Relaxed);
         println!("[sayit] engine sleeping — VRAM freed");
         let _ = app.emit("engine_sleeping", ());
     }
+}
+
+pub fn stop(app: &AppHandle) {
+    if let Some(mut child) = app.state::<Sidecar>().0.lock().unwrap().take() {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    app.state::<Ready>().0.store(false, Ordering::Relaxed);
 }
 
 /// Warm the engine with half a second of silence. At first-ever boot this

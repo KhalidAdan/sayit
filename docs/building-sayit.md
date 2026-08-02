@@ -1,8 +1,39 @@
-# Building sayit — a WhisperTyping-style dictation app for Windows
+# Building sayit — local dictation for Windows and Linux
 
-Notes from the initial scoping conversation (2026-07-22). Verdict up front: **a working
-version is a weekend project, not a moonshot.** The AI model is already solved and free;
-the app is mostly glue.
+> The sections below preserve the original 2026-07-22 scoping notes. The shipped
+> implementation is now a single Tauri/Rust codebase: Windows uses hold-F9 and
+> SendInput; Linux uses evdev, uinput, Wayland data-control, and a D-Bus
+> StatusNotifierItem.
+
+## Current Linux build
+
+The immutable desktop host needs no compiler or CUDA toolkit. Development uses a
+Distrobox with `gcc`, `pkg-config`, GTK 3, WebKitGTK 4.1, ALSA development
+headers, Rust, and Cargo:
+
+```bash
+npm ci
+npm run build
+distrobox enter sayit-dev -- bash -lc \
+  'cd /home/aadan/Development/sayit/src-tauri && cargo test && CARGO_BUILD_JOBS=2 cargo build --release --features custom-protocol'
+SAYIT_NO_LAUNCH=1 scripts/install-linux.sh
+```
+
+The CUDA companion is built in `nvidia/cuda:12.4.1-devel-ubuntu22.04` for SM
+8.6. CUDA runtime and cuBLAS are statically linked into `whisper-server`; NCCL
+is disabled because this target has one GPU. The installed NVIDIA driver is its
+only GPU dependency. See `.github/workflows/engine-linux.yml` for the
+reproducible build.
+
+The release binary remains dynamically linked to system GTK/WebKitGTK/ALSA,
+which are desktop runtime libraries already present on the target. First-run
+assets are downloaded to the per-user data directory with resume, exact size,
+SHA-256, signature verification for the CUDA manifest, and atomic activation.
+
+## Original scope
+
+Verdict up front: **a working version is a weekend project, not a moonshot.**
+The AI model is already solved and free; the app is mostly glue.
 
 ## Vocabulary
 

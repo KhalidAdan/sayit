@@ -42,7 +42,14 @@ pub fn start() -> Sounds {
         println!(
             "[sayit] soundpack: {}",
             SLOTS
-                .map(|s| format!("{s}={}", if loaded.contains_key(s) { "loaded" } else { "silent" }))
+                .map(|s| format!(
+                    "{s}={}",
+                    if loaded.contains_key(s) {
+                        "loaded"
+                    } else {
+                        "silent"
+                    }
+                ))
                 .join(", ")
         );
 

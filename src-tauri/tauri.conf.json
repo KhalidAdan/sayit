@@ -42,6 +42,20 @@
         "skipTaskbar": false
       },
       {
+        "label": "setup",
+        "title": "sayit — this machine",
+        "url": "/setup.html",
+        "width": 560,
+        "height": 680,
+        "minWidth": 500,
+        "minHeight": 560,
+        "visible": false,
+        "center": true,
+        "theme": "Dark",
+        "backgroundColor": "#09090b",
+        "skipTaskbar": false
+      },
+      {
         "label": "waveform",
         "title": "sayit waveform",
         "url": "/waveform.html",
