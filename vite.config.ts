@@ -12,14 +12,15 @@ export default defineConfig(async () => ({
   // 1. prevent Vite from obscuring rust errors
   clearScreen: false,
   plugins: [tailwindcss()],
-  // Three pages: the hidden coordinator (index), the waveform overlay,
-  // and the dictionary editor.
+  // Four pages: the hidden coordinator, waveform, dictionary, and the
+  // first-run/diagnostics window.
   build: {
     rollupOptions: {
       input: {
         main: "index.html",
         waveform: "waveform.html",
         dictionary: "dictionary.html",
+        setup: "setup.html",
       },
     },
   },

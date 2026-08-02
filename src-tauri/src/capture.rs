@@ -41,7 +41,11 @@ pub fn list_inputs() -> Vec<String> {
         .unwrap_or_default()
 }
 
-pub fn start(state: &CaptureState, app: &AppHandle, preferred: Option<String>) -> Result<(), String> {
+pub fn start(
+    state: &CaptureState,
+    app: &AppHandle,
+    preferred: Option<String>,
+) -> Result<(), String> {
     let mut capture = state.lock().unwrap();
     if capture.session.is_some() {
         return Err("already recording".into());
@@ -60,11 +64,13 @@ pub fn start(state: &CaptureState, app: &AppHandle, preferred: Option<String>) -
         })
         .or_else(|| host.default_input_device())
         .ok_or("no microphone found")?;
+    let device_name = device.name().unwrap_or_else(|_| "microphone".into());
     let supported = device.default_input_config().map_err(|e| e.to_string())?;
     let sample_format = supported.sample_format();
     let config: cpal::StreamConfig = supported.config();
     let source_rate = config.sample_rate.0;
     let channels = config.channels as usize;
+    println!("[capture] opening {device_name:?}: {channels}ch @ {source_rate}Hz {sample_format}");
 
     let samples: Arc<Mutex<Vec<f32>>> = Arc::default();
     let (stop, stopped) = channel::<()>();
@@ -105,9 +111,14 @@ pub fn start(state: &CaptureState, app: &AppHandle, preferred: Option<String>) -
         let stream = match sample_format {
             cpal::SampleFormat::F32 => {
                 let level = level.clone();
+                let callback_ready = ready_tx.clone();
+                let announced = Arc::new(AtomicBool::new(false));
                 device.build_input_stream(
                     &config,
                     move |data: &[f32], _: &_| {
+                        if !data.is_empty() && !announced.swap(true, Ordering::Relaxed) {
+                            let _ = callback_ready.send(Ok(()));
+                        }
                         let mut sink = sink.lock().unwrap();
                         let mut peak = 0f32;
                         for frame in data.chunks(channels) {
@@ -123,9 +134,14 @@ pub fn start(state: &CaptureState, app: &AppHandle, preferred: Option<String>) -
             }
             cpal::SampleFormat::I16 => {
                 let level = level.clone();
+                let callback_ready = ready_tx.clone();
+                let announced = Arc::new(AtomicBool::new(false));
                 device.build_input_stream(
                     &config,
                     move |data: &[i16], _: &_| {
+                        if !data.is_empty() && !announced.swap(true, Ordering::Relaxed) {
+                            let _ = callback_ready.send(Ok(()));
+                        }
                         let mut sink = sink.lock().unwrap();
                         let mut peak = 0f32;
                         for frame in data.chunks(channels) {
@@ -148,8 +164,9 @@ pub fn start(state: &CaptureState, app: &AppHandle, preferred: Option<String>) -
         match stream {
             Ok(stream) => match stream.play() {
                 Ok(()) => {
-                    let _ = ready_tx.send(Ok(()));
-                    // Block until stop() signals (or the sender is dropped).
+                    // The callback, not play(), declares readiness. ALSA can
+                    // accept play() while a wedged USB/PipeWire source delivers
+                    // no frames at all.
                     let _ = stopped.recv();
                     drop(stream); // torn down on the thread that built it
                     let _ = ack_tx.send(());
@@ -206,6 +223,17 @@ pub fn stop(state: &CaptureState) -> Result<Vec<f32>, String> {
     }
     let teardown_ms = t.elapsed().as_millis();
     let recorded = std::mem::take(&mut *session.samples.lock().unwrap());
+    // A duplicate/accidental stop can arrive before ALSA has delivered its
+    // first period. Never send an invalid empty WAV to Whisper (where it looks
+    // like an engine outage and used to trigger 90 seconds of retries).
+    let minimum = (session.source_rate / 20) as usize; // 50ms
+    if recorded.len() < minimum {
+        return Err(format!(
+            "recording ended before the microphone delivered audio ({}/{} samples)",
+            recorded.len(),
+            minimum
+        ));
+    }
     // Diagnostic breadcrumb: a "working" mic that delivers silence (seen
     // after a USB replug) shows up here as a near-zero peak on a real take.
     let peak = recorded.iter().fold(0f32, |m, s| m.max(s.abs()));

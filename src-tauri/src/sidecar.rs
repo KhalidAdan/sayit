@@ -23,6 +23,7 @@ use crate::{capture, transcribe};
 /// (2026-08-02: two orphans starved a nightly Ollama run on this machine).
 /// The handle is created once and deliberately never closed — it must live
 /// exactly as long as the process.
+#[cfg(windows)]
 fn job() -> windows_sys::Win32::Foundation::HANDLE {
     use std::sync::OnceLock;
     use windows_sys::Win32::System::JobObjects::{
@@ -64,6 +65,7 @@ fn job() -> windows_sys::Win32::Foundation::HANDLE {
 /// Only processes whose image path is exactly OUR resolved sidecar exe are
 /// touched — a whisper-server belonging to some other tool is not ours to
 /// kill.
+#[cfg(windows)]
 pub fn reap_stale() {
     use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
     use windows_sys::Win32::System::Diagnostics::ToolHelp::{
@@ -140,9 +142,6 @@ pub struct Sidecar(pub Mutex<Option<Child>>);
 /// engine is left alone, so the coordinator can call this on every press
 /// without thinking.
 pub fn start(app: &AppHandle) -> Result<(), String> {
-    use std::os::windows::process::CommandExt;
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-
     let sidecar = app.state::<Sidecar>();
     let mut guard = sidecar.0.lock().unwrap();
     if guard.is_some() {
@@ -153,19 +152,41 @@ pub fn start(app: &AppHandle) -> Result<(), String> {
     // layout) — see paths.rs. The same exe works everywhere.
     let server = crate::paths::sidecar_exe()?;
     let model = crate::paths::model()?;
-    let child = Command::new(server)
+    let mut command = Command::new(server);
+    command
         .arg("-m")
         .arg(&model)
         .arg("--host")
         .arg("127.0.0.1")
         .arg("--port")
-        .arg(transcribe::SIDECAR_PORT.to_string())
-        .creation_flags(CREATE_NO_WINDOW)
+        .arg(transcribe::SIDECAR_PORT.to_string());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::process::CommandExt;
+        // A crashed parent must not leave a server owning the port and VRAM.
+        unsafe {
+            command.pre_exec(|| {
+                if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM) == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+    }
+    let child = command
         .spawn()
         .map_err(|e| format!("failed to spawn whisper-server: {e}"))?;
     // Tie the engine's lifetime to ours BEFORE it can outlive a crash.
     // A failed assign is logged, not fatal: the engine still works, it's
     // just back to trusting the exit handler (and the next boot's reap).
+    // On Linux the equivalent tie is prctl(PR_SET_PDEATHSIG) above.
+    #[cfg(windows)]
     unsafe {
         use std::os::windows::io::AsRawHandle;
         if windows_sys::Win32::System::JobObjects::AssignProcessToJobObject(
@@ -196,6 +217,14 @@ pub fn sleep(app: &AppHandle) {
         println!("[sayit] engine sleeping — VRAM freed");
         let _ = app.emit("engine_sleeping", ());
     }
+}
+
+pub fn stop(app: &AppHandle) {
+    if let Some(mut child) = app.state::<Sidecar>().0.lock().unwrap().take() {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    app.state::<Ready>().0.store(false, Ordering::Relaxed);
 }
 
 /// Warm the engine with half a second of silence. At first-ever boot this

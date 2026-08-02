@@ -1,14 +1,5 @@
-# The release machine: push a version tag (v0.2.0, ...) and GitHub builds
-# sayit, signs the updater artifacts, and publishes a real Release with
-# installers + latest.json. Running apps see it at next boot (update.rs),
-# stage it silently, and apply it on their next launch.
-#
-# Requires two repo secrets (one-time setup, docs/sidecar.md):
-#   TAURI_SIGNING_PRIVATE_KEY           (contents of ~/.tauri/sayit.key)
-#   TAURI_SIGNING_PRIVATE_KEY_PASSWORD  (contents of ~/.tauri/sayit-key-password.txt)
-#
-# Companions (sidecar/, models/) are NOT in the installer — the exe finds
-# them at runtime (paths.rs): next to the exe or anywhere up-tree of it.
+# One tag produces the existing Windows installers plus a signed standalone
+# Linux binary. Both entries are published in the same updater manifest.
 name: Release
 
 on:
@@ -20,22 +11,52 @@ permissions:
   contents: write
 
 jobs:
-  release:
-    runs-on: windows-latest
+  linux:
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
       - run: npm ci
-
+      - run: npm run build
+      - run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libasound2-dev
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
+      - run: cargo build --release --features custom-protocol --manifest-path src-tauri/Cargo.toml
+      - name: Name and sign standalone binary
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          cp src-tauri/target/release/sayit sayit-linux-x86_64
+          chmod 755 sayit-linux-x86_64
+          npx tauri signer sign sayit-linux-x86_64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-release
+          path: |
+            sayit-linux-x86_64
+            sayit-linux-x86_64.sig
 
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -44,6 +65,30 @@ jobs:
         with:
           tagName: ${{ github.ref_name }}
           releaseName: "sayit ${{ github.ref_name }}"
-          releaseBody: "Hold the key. Say it. First install: see docs/sidecar.md for the whisper-server + model setup. Updates after that are automatic."
+          releaseBody: "Hold the key. Say it. Linux prepares its local engine on first run; updates after that are automatic."
           releaseDraft: false
           prerelease: false
+
+  publish-linux:
+    needs: [linux, windows]
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: linux-release
+      - name: Add Linux to latest.json
+        run: |
+          gh release download "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --pattern latest.json
+          node <<'NODE'
+          const fs = require('fs');
+          const manifest = JSON.parse(fs.readFileSync('latest.json', 'utf8'));
+          manifest.platforms['linux-x86_64-bin'] = {
+            signature: fs.readFileSync('sayit-linux-x86_64.sig', 'utf8').trim(),
+            url: `https://github.com/${process.env.GITHUB_REPOSITORY}/releases/download/${process.env.GITHUB_REF_NAME}/sayit-linux-x86_64`
+          };
+          fs.writeFileSync('latest.json', JSON.stringify(manifest, null, 2) + '\n');
+          NODE
+          gh release upload "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --clobber \
+            sayit-linux-x86_64 sayit-linux-x86_64.sig latest.json

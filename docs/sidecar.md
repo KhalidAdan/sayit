@@ -1,7 +1,28 @@
-# The Sidecar — proven 2026-07-25
+# The Sidecar — proven on Windows and Linux
 
-Step 1 of v1 is done: whisper.cpp's server runs on the RTX 2070 via CUDA and
-transcribes correctly. Numbers and procedure below so nobody rediscovers this.
+## Linux proof — 2026-08-02
+
+`whisper-server` v1.9.1 is compiled in an NVIDIA CUDA 12.4 container for SM
+8.6. It is one 653 MB executable with CUDA runtime and cuBLAS linked in; `ldd`
+shows no CUDA toolkit or NCCL dependency, only the normal NVIDIA driver
+`libcuda.so.1` and baseline system C/C++ libraries.
+
+On this machine's RTX 3070, the server loaded `ggml-small.bin` and reported its
+CUDA backend ready in 3 seconds. Two 0.5-second silence inference requests took
+112 ms and 43 ms. The first-run setup performs the same inference as warmup.
+Released apps select this engine through a signed companion manifest, with the
+pinned official Ubuntu CPU archive as a functional fallback.
+
+```bash
+~/.local/share/dev.khalid.sayit/engine/whisper-server \
+  -m ~/.local/share/dev.khalid.sayit/models/ggml-small.bin \
+  --host 127.0.0.1 --port 8642
+```
+
+## Windows proof — 2026-07-25
+
+Step 1 of v1 proved whisper.cpp's server on the RTX 2070 via CUDA. Numbers and
+procedure remain below so nobody rediscovers this.
 
 ## What's installed
 

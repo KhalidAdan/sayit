@@ -60,6 +60,28 @@ Pre-flight for all smoke runs: kill ghost processes (`sayit`,
 `whisper-server`, anything on ports 1420/8642) — stale trees from previous
 sessions cause false failures.
 
+## Linux release gate — this machine
+
+Before calling Linux complete, perform three consecutive takes in **Ghostty,
+Helium, and Zed** and verify all of the following:
+
+- double-tap left Control starts; one clean tap stops; ordinary Ctrl shortcuts
+  and typing never trigger sayit;
+- text lands in the focused application and both Clipboard and Primary are
+  restored after every take;
+- an 8-second warm take has a felt gap of at most 1 second;
+- keyboard and microphone replug recover without restarting sayit;
+- suspend/resume restores hotkey, microphone, tray truth, and inference;
+- login autostart works; the tray Diagnostics item reopens setup;
+- a signed binary update swaps atomically, and a candidate that fails before
+  healthy startup rolls back to `.sayit.previous` on the next launch.
+
+The setup window's **Test typing** control is the containment target for direct
+injection checks. Never run a synthetic gesture unless a scratch input is
+focused first. Virtual uinput keyboards do not receive the active-session ACL
+that physical `event*` devices do on this host, so the evdev gesture gate is a
+manual physical-key test rather than a misleading synthetic one.
+
 ## Layer 3 — Perceptual checks (run per version, human required)
 
 The things only Khalid's ears and hands can judge:
@@ -93,6 +115,7 @@ Team in:* — because memorable bugs teach lessons that stick.
 | **The Unheard Announcement** | `sidecar_ready` event fired before webview listeners existed (driver-cached CUDA kernels make later warmups fast); every press refused | push-only readiness is a race — state must also be pullable (`is_ready`) | design (sidecar::Ready) + Layer 2 smoke asserts a press is accepted |
 | **The Unplugging** | USB mic replug hung a WASAPI stream; unbounded thread join wedged the coordinator forever ("app does not work") | never wait unboundedly at a seam: handshake with timeout on stream start, bounded ack on teardown, Effect.timeout as the coordinator's seatbelt | design (capture.rs handshakes, main.ts timeout) + Layer 3: replug the mic mid-session, verify next take works |
 | **The Deadlock Hunt** | Second press after any completed take hung silently: the sleep-timer fiber was forked inside `ensuring()` (a finalizer = uninterruptible region), inherited uninterruptibility, and `Fiber.interrupt` awaited the full 10-minute sleep | fibers forked in finalizers inherit uninterruptible — mark them `Effect.interruptible` AND cancel with `Fiber.interruptFork` (never await a fiber's death on the hot path). Diagnosed by layered probes: hotkey event log → heartbeat → callback probe | design (main.ts) + Layer 2: smoke runs THREE consecutive takes with the engine ready — single-take smoke let this hide for a day |
+| **The Tap That Kept Listening** | A sub-100ms tap delivered `push_finished` while `start_capture` was still in flight; the `!== "recording"` guard dropped the release and the mic recorded for 77s until the next tap — which then pasted the entire ambient transcript | between two async stages, an event that arrives "too early" is state, not noise: park it and replay it when the stage completes (`pressInFlightRef` / `releasedDuringStartRef`) | design (main.ts) + Layer 2: smoke adds a quick-tap (~30ms hold) and asserts capture stops without a second press |
 
 ## What is deliberately not tested
 

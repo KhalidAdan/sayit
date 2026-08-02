@@ -5,12 +5,16 @@
 //! machine and decides what happens next. Rust touches the OS, TS makes
 //! decisions, the sidecar thinks.
 
+mod assets;
 mod capture;
 mod dictionary;
 mod hotkey;
 mod inject;
+#[cfg(target_os = "linux")]
+mod linux_input;
 mod paths;
 mod settings;
+mod setup;
 mod sidecar;
 mod sounds;
 mod transcribe;
@@ -23,7 +27,6 @@ use tauri::Manager;
 
 /// The tray's microphone pick. None = system default.
 pub struct MicChoice(pub Mutex<Option<String>>);
-
 
 #[tauri::command]
 fn start_capture(
@@ -104,9 +107,22 @@ async fn stop_and_transcribe(
     })
 }
 
+#[cfg(windows)]
 #[tauri::command]
 async fn inject_text(text: String) -> Result<inject::InjectTiming, String> {
     tauri::async_runtime::spawn_blocking(move || inject::inject(&text))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[cfg(target_os = "linux")]
+#[tauri::command]
+async fn inject_text(
+    text: String,
+    input: tauri::State<'_, linux_input::LinuxInput>,
+) -> Result<inject::InjectTiming, String> {
+    let input = input.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || inject::inject(&text, &input))
         .await
         .map_err(|e| e.to_string())?
 }
@@ -122,10 +138,35 @@ fn tray_status(app: tauri::AppHandle, text: String) {
     tray::set_status(&app, &text);
 }
 
-
 #[tauri::command]
 fn is_ready(ready: tauri::State<sidecar::Ready>) -> bool {
     ready.0.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+#[tauri::command]
+fn trigger_mode(mode: hotkey::TriggerMode, control: tauri::State<hotkey::HotkeyControl>) {
+    hotkey::set_mode(&control, mode);
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PlatformInfo {
+    os: &'static str,
+    trigger_hint: &'static str,
+}
+
+#[tauri::command]
+fn platform_info() -> PlatformInfo {
+    #[cfg(windows)]
+    return PlatformInfo {
+        os: "windows",
+        trigger_hint: "hold F9 to dictate",
+    };
+    #[cfg(target_os = "linux")]
+    return PlatformInfo {
+        os: "linux",
+        trigger_hint: "double-tap left Ctrl or remapped Caps to dictate",
+    };
 }
 
 /// The coordinator pulls this at boot so its sleep timer honors the
@@ -199,7 +240,9 @@ fn log_gap(app: tauri::AppHandle, row: GapRow) {
         "[sayit] gap: felt {}ms (total {}ms) for {} chars",
         row.felt_ms, row.total_ms, row.chars
     );
-    let Ok(dir) = app.path().app_config_dir() else { return };
+    let Ok(dir) = app.path().app_config_dir() else {
+        return;
+    };
     let _ = std::fs::create_dir_all(&dir);
     let csv = dir.join("gap-log.csv");
     let stamp = std::time::SystemTime::now()
@@ -234,7 +277,11 @@ fn log_gap(app: tauri::AppHandle, row: GapRow) {
     }
 
     let new = !csv.exists();
-    if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(csv) {
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(csv)
+    {
         if new {
             let _ = writeln!(file, "{GAP_HEADER}");
         }
@@ -284,10 +331,23 @@ fn waveform_hide(app: tauri::AppHandle) {
     }
 }
 
+#[cfg(target_os = "linux")]
+pub fn update_preflight() -> Result<(), String> {
+    update::preflight()
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn update_preflight() -> Result<(), String> {
+    Ok(())
+}
+
 /// One sayit per machine. Two instances means two engines fighting over
 /// one hotkey, one port, and — the expensive part — double the VRAM.
 /// A named mutex is the classic Windows answer; the handle is deliberately
-/// leaked so the claim lasts exactly as long as the process.
+/// leaked so the claim lasts exactly as long as the process. The
+/// single-instance plugin below is the cross-platform half — the mutex
+/// wins the race before Tauri even builds.
+#[cfg(windows)]
 fn already_running() -> bool {
     use windows_sys::Win32::Foundation::{ERROR_ALREADY_EXISTS, GetLastError};
     use windows_sys::Win32::System::Threading::CreateMutexW;
@@ -299,18 +359,21 @@ fn already_running() -> bool {
 }
 
 pub fn run() {
+    #[cfg(windows)]
     if already_running() {
         eprintln!("[sayit] another sayit is already running — not starting a second engine");
         return;
     }
-    tauri::Builder::default()
-        .plugin(
-            tauri_plugin_global_shortcut::Builder::new()
-                .with_shortcuts([hotkey::PUSH_TO_TALK])
-                .expect("push-to-talk key is not a valid shortcut")
-                .with_handler(|app, _shortcut, event| hotkey::on_shortcut(app, event.state()))
-                .build(),
-        )
+    let builder = tauri::Builder::default()
+        // Must be the first plugin: a second process must never race the
+        // sidecar, updater, clipboard, or event-device listener.
+        .plugin(tauri_plugin_single_instance::init(|app, _, _| {
+            if !settings::load(app).linux_setup_complete && cfg!(target_os = "linux") {
+                setup::show(app);
+            } else {
+                tray::set_status(app, "already running");
+            }
+        }))
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,
@@ -323,18 +386,40 @@ pub fn run() {
         .manage(tray::Tray::default())
         .manage(MicChoice(Mutex::new(None)))
         .manage(dictionary::Rules::default())
+        .manage(hotkey::HotkeyControl::default())
+        .manage(setup::SetupState::default());
+
+    #[cfg(windows)]
+    let builder = builder.plugin(
+        tauri_plugin_global_shortcut::Builder::new()
+            .with_shortcuts([hotkey::PUSH_TO_TALK])
+            .expect("push-to-talk key is not a valid shortcut")
+            .with_handler(|app, _shortcut, event| hotkey::on_shortcut(app, event.state()))
+            .build(),
+    );
+    #[cfg(target_os = "linux")]
+    let builder = builder.manage(linux_input::LinuxInput::start());
+
+    builder
         .setup(|app| {
             let saved = settings::load(app.handle());
             *app.state::<MicChoice>().0.lock().unwrap() = saved.microphone.clone();
             dictionary::init(app.handle(), &saved);
-            tray::build(app.handle(), &saved)?;
+            setup::init_window(app.handle());
+            tray::build(app.handle(), &saved)
+                .map_err(|e| std::io::Error::other(format!("tray failed: {e}")))?;
             // A previous sayit that died uncleanly may have left its engine
             // behind, still holding VRAM and port 8642. Clear it before
             // spawning ours, or we'd run two (docs/sidecar.md).
+            #[cfg(windows)]
             sidecar::reap_stale();
-            sidecar::start(app.handle())?;
+            setup::start_normal(app.handle());
             tauri::async_runtime::spawn(update::check_and_install(app.handle().clone()));
+            #[cfg(windows)]
             println!("[sayit] push-to-talk on {}", hotkey::PUSH_TO_TALK);
+            #[cfg(target_os = "linux")]
+            println!("[sayit] trigger: double-tap left Ctrl/remapped Caps; one tap stops");
+            update::mark_healthy();
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -344,6 +429,8 @@ pub fn run() {
             play_sound,
             tray_status,
             is_ready,
+            trigger_mode,
+            platform_info,
             get_keep_awake,
             get_idle_minutes,
             engine_start,
@@ -355,7 +442,13 @@ pub fn run() {
             dictionary::dictionary_save,
             dictionary::dictionary_preview,
             dictionary::dictionary_show,
-            dictionary::dictionary_hide
+            dictionary::dictionary_hide,
+            setup::setup_show,
+            setup::setup_hide,
+            setup::setup_snapshot,
+            setup::setup_begin,
+            setup::setup_finish,
+            setup::setup_test_injection
         ])
         .build(tauri::generate_context!())
         .expect("error building sayit")
@@ -365,10 +458,7 @@ pub fn run() {
             // object (sidecar.rs) would catch it anyway — this is just the
             // polite version that doesn't wait for the OS.
             if let tauri::RunEvent::Exit = event {
-                if let Some(mut child) = app.state::<sidecar::Sidecar>().0.lock().unwrap().take() {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                }
+                sidecar::stop(app);
             }
         });
 }
