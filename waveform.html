@@ -28,6 +28,17 @@
         width: calc(100% - 32px);
         height: calc(100% - 26px);
       }
+
+      /* WebKitGTK enforces a ~200px webview minimum on this machine. The
+         Windows host is 64px and never enters this query; an oversized host
+         stays transparent while carrying the unchanged Windows pill. */
+      @media (min-height: 100px) {
+        #pill {
+          top: auto;
+          height: 64px;
+          overflow: hidden;
+        }
+      }
     </style>
   </head>
   <body>
