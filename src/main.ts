@@ -1,7 +1,8 @@
 // The coordinator, in Effect. Rust touches the OS, the sidecar thinks —
 // this file makes decisions, including the engine's metabolism: awake
-// while you dictate, asleep after ten idle minutes, woken by the key
-// itself. The user never manages any of it. The key always works.
+// while you dictate, asleep after a few idle minutes (settings.json
+// idle_minutes, default 5), woken by the key itself. The user never
+// manages any of it. The key always works.
 //
 // Reading guide for future-Khalid:
 // - An Effect is a *description* — nothing runs until Effect.runPromise.
@@ -42,8 +43,10 @@ type InjectTiming = {
   totalMs: number;
 };
 
-/// After this much idle, the engine sleeps and ~500MB of VRAM comes home.
-const IDLE_SLEEP = Duration.minutes(10);
+/// After this many idle minutes, the engine sleeps and ~500MB of VRAM
+/// comes home. Pulled from settings.json (`idle_minutes`, default 5) at
+/// boot; 0 disables the timer, same as keep-awake.
+const idleMinutesRef = Ref.unsafeMake(5);
 
 class CmdError extends Data.TaggedError("CmdError")<{
   readonly cmd: string;
@@ -88,13 +91,14 @@ const armSleepTimer = Effect.gen(function* () {
   yield* cancelSleepTimer;
   const keepAwake = yield* Ref.get(keepAwakeRef);
   const engine = yield* Ref.get(engineRef);
-  if (keepAwake || engine !== "ready") return;
+  const idleMinutes = yield* Ref.get(idleMinutesRef);
+  if (keepAwake || idleMinutes <= 0 || engine !== "ready") return;
   // Effect.interruptible is load-bearing: this fork happens inside
   // show("idle"), which runs inside ensuring() — a finalizer, which is
   // UNINTERRUPTIBLE, and forked fibers inherit that. Without this marker
   // the sleep cannot be interrupted and cancellation waits out the full
-  // ten minutes (regression ledger: the silent second-press bug).
-  const fiber = yield* Effect.sleep(IDLE_SLEEP).pipe(
+  // idle window (regression ledger: the silent second-press bug).
+  const fiber = yield* Effect.sleep(Duration.minutes(idleMinutes)).pipe(
     Effect.zipRight(cmd("engine_sleep").pipe(Effect.ignore)),
     Effect.interruptible,
     Effect.forkDaemon,
@@ -294,6 +298,7 @@ const becomeReady = Effect.gen(function* () {
 void Effect.runPromise(
   Effect.gen(function* () {
     yield* Ref.set(keepAwakeRef, yield* cmd<boolean>("get_keep_awake"));
+    yield* Ref.set(idleMinutesRef, yield* cmd<number>("get_idle_minutes"));
     if (yield* cmd<boolean>("is_ready")) yield* becomeReady;
   }).pipe(Effect.ignore),
 );

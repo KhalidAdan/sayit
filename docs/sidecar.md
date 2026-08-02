@@ -43,14 +43,31 @@ Transcription was word-perfect on all three, including the made-up phrase
 3. Server startup (model → VRAM) takes a few seconds; the app should treat "sidecar
    ready" as an event, not an assumption. Warmup doubles as the readiness probe.
 4. **The engine has a metabolism** (added with the hybrid sleep/wake
-   feature): after 10 idle minutes the coordinator kills whisper-server,
-   freeing ~500MB VRAM; the tray reads "engine sleeping — press to talk."
-   A press from sleep ALWAYS records — capture needs no engine — while
-   `engine_start` wakes it concurrently and `transcribe_waiting` retries
-   until warm (seconds, thanks to driver-cached CUDA kernels). "Keep
-   engine awake" in the tray pins it hot. The key always works; the user
-   manages nothing.
-5. **Whisper annotates non-speech in brackets** — a silent take transcribes as
+   feature): after `idle_minutes` of idle (settings.json, default 5,
+   0 = never) the coordinator kills whisper-server, freeing ~500MB VRAM;
+   the tray reads "engine sleeping — press to talk." A press from sleep
+   ALWAYS records — capture needs no engine — while `engine_start` wakes
+   it concurrently and `transcribe_waiting` retries until warm (seconds,
+   thanks to driver-cached CUDA kernels). "Keep engine awake" in the tray
+   pins it hot. The key always works; the user manages nothing.
+5. **The engine cannot outlive sayit** (added 2026-08-02, after two
+   orphaned whisper-servers held ~1GB of VRAM overnight and starved a
+   nightly Ollama job into 5-minute timeouts). Three layers:
+   - every spawned whisper-server is assigned to a Windows **job object**
+     with `KILL_ON_JOB_CLOSE` — if sayit dies for ANY reason (crash, Task
+     Manager, dev-run teardown), the OS kills the engine with it;
+   - at boot, sayit **reaps stale** whisper-server processes whose image
+     path matches its own sidecar exe (orphans from pre-job-object builds).
+     Note the orphan doesn't even cause a port clash you'd notice:
+     whisper-server binds with SO_REUSEADDR, so on Windows a second
+     instance binds port 8642 alongside the first and both squat VRAM;
+   - a named mutex makes sayit **single-instance**, so two app launches
+     can't spawn two engines.
+
+   Verify: leave sayit idle past `idle_minutes`, then
+   `nvidia-smi --query-gpu=memory.used --format=csv` — sayit should
+   contribute ~0 MiB (and `tasklist | findstr whisper-server` nothing).
+6. **Whisper annotates non-speech in brackets** — a silent take transcribes as
    `[BLANK_AUDIO]`, and markers like `[MUSIC]` / `(door slams)` exist too. Discovered
    when the v1 smoke test pasted `[BLANK_AUDIO]` into Notepad. `transcribe.rs` strips
    bracketed spans before returning text; a silent take therefore returns `""` and the

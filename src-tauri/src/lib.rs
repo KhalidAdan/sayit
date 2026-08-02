@@ -135,6 +135,14 @@ fn get_keep_awake(app: tauri::AppHandle) -> bool {
     settings::load(&app).keep_awake
 }
 
+/// How long the engine may idle before it sleeps (settings.json
+/// `idle_minutes`, default 5, 0 = never). Pulled by the coordinator at
+/// boot, same as keep-awake.
+#[tauri::command]
+fn get_idle_minutes(app: tauri::AppHandle) -> u64 {
+    settings::load(&app).idle_minutes
+}
+
 #[tauri::command]
 fn engine_start(app: tauri::AppHandle) -> Result<(), String> {
     sidecar::start(&app)
@@ -276,7 +284,25 @@ fn waveform_hide(app: tauri::AppHandle) {
     }
 }
 
+/// One sayit per machine. Two instances means two engines fighting over
+/// one hotkey, one port, and — the expensive part — double the VRAM.
+/// A named mutex is the classic Windows answer; the handle is deliberately
+/// leaked so the claim lasts exactly as long as the process.
+fn already_running() -> bool {
+    use windows_sys::Win32::Foundation::{ERROR_ALREADY_EXISTS, GetLastError};
+    use windows_sys::Win32::System::Threading::CreateMutexW;
+    let name: Vec<u16> = "Local\\sayit-single-instance\0".encode_utf16().collect();
+    unsafe {
+        let handle = CreateMutexW(std::ptr::null(), 0, name.as_ptr());
+        !handle.is_null() && GetLastError() == ERROR_ALREADY_EXISTS
+    }
+}
+
 pub fn run() {
+    if already_running() {
+        eprintln!("[sayit] another sayit is already running — not starting a second engine");
+        return;
+    }
     tauri::Builder::default()
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
@@ -302,6 +328,10 @@ pub fn run() {
             *app.state::<MicChoice>().0.lock().unwrap() = saved.microphone.clone();
             dictionary::init(app.handle(), &saved);
             tray::build(app.handle(), &saved)?;
+            // A previous sayit that died uncleanly may have left its engine
+            // behind, still holding VRAM and port 8642. Clear it before
+            // spawning ours, or we'd run two (docs/sidecar.md).
+            sidecar::reap_stale();
             sidecar::start(app.handle())?;
             tauri::async_runtime::spawn(update::check_and_install(app.handle().clone()));
             println!("[sayit] push-to-talk on {}", hotkey::PUSH_TO_TALK);
@@ -315,6 +345,7 @@ pub fn run() {
             tray_status,
             is_ready,
             get_keep_awake,
+            get_idle_minutes,
             engine_start,
             engine_sleep,
             log_gap,
@@ -330,10 +361,13 @@ pub fn run() {
         .expect("error building sayit")
         .run(|app, event| {
             // The sidecar is our child; if we exit and leave it running, it
-            // squats on the port and half a gig of VRAM forever.
+            // squats on the port and half a gig of VRAM forever. The job
+            // object (sidecar.rs) would catch it anyway — this is just the
+            // polite version that doesn't wait for the OS.
             if let tauri::RunEvent::Exit = event {
                 if let Some(mut child) = app.state::<sidecar::Sidecar>().0.lock().unwrap().take() {
                     let _ = child.kill();
+                    let _ = child.wait();
                 }
             }
         });

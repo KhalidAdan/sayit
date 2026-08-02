@@ -1,6 +1,6 @@
 //! Persistence for the key's few switches. A hand-rolled settings.json in
-//! the app config dir — two fields don't need a plugin, and every line of
-//! this is explainable. Load never fails (absent or corrupt file =
+//! the app config dir — a handful of fields don't need a plugin, and every
+//! line of this is explainable. Load never fails (absent or corrupt file =
 //! defaults); save never panics (a failed write costs one preference, not
 //! a crash).
 
@@ -8,7 +8,7 @@ use crate::dictionary::Replacement;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 
-#[derive(Default, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Settings {
     /// None = system default microphone.
     #[serde(default)]
@@ -16,9 +16,33 @@ pub struct Settings {
     /// Pin the engine awake (skip the idle sleep timer).
     #[serde(default)]
     pub keep_awake: bool,
+    /// Minutes of idle before the engine sleeps and its VRAM comes home.
+    /// Edit settings.json to change it; 0 disables auto-sleep entirely
+    /// (same effect as keep_awake). Kept small on purpose — an idle engine
+    /// squatting VRAM overnight starves every other GPU workload on the
+    /// machine, and a wake costs only seconds.
+    #[serde(default = "default_idle_minutes")]
+    pub idle_minutes: u64,
     /// The dictionary: applied in order to every transcript, before the paste.
     #[serde(default)]
     pub replacements: Vec<Replacement>,
+}
+
+fn default_idle_minutes() -> u64 {
+    5
+}
+
+/// Hand-rolled (not derived) so a missing settings.json gets the same
+/// idle default as a settings.json missing the field.
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            microphone: None,
+            keep_awake: false,
+            idle_minutes: default_idle_minutes(),
+            replacements: Vec::new(),
+        }
+    }
 }
 
 fn path(app: &AppHandle) -> Option<std::path::PathBuf> {
@@ -31,7 +55,10 @@ fn path(app: &AppHandle) -> Option<std::path::PathBuf> {
 pub fn load(app: &AppHandle) -> Settings {
     path(app)
         .and_then(|p| std::fs::read_to_string(p).ok())
-        .and_then(|text| serde_json::from_str(&text).ok())
+        // Hand-edited files (idle_minutes lives here) may carry a UTF-8
+        // BOM, which serde_json rejects — and a silent fall-back to
+        // defaults would look like the edit was ignored.
+        .and_then(|text| serde_json::from_str(text.trim_start_matches('\u{feff}')).ok())
         .unwrap_or_default()
 }
 
