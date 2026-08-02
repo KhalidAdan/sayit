@@ -67,6 +67,13 @@ const waveform = (visible: boolean) =>
   cmd(visible ? "waveform_show" : "waveform_hide").pipe(Effect.ignore);
 
 const stateRef = Ref.unsafeMake<State>("idle");
+// The quick-tap seam: a sub-100ms tap delivers push_finished while
+// onPushStarted is still awaiting start_capture, so stateRef says "idle"
+// and the release used to be dropped — leaving the mic recording forever.
+// pressInFlight marks that window; releasedDuringStart parks the key-up
+// stamp for the press fiber's finalizer to replay.
+const pressInFlightRef = Ref.unsafeMake(false);
+const releasedDuringStartRef = Ref.unsafeMake<number | null>(null);
 const heardNothingRef = Ref.unsafeMake(false);
 const engineRef = Ref.unsafeMake<Engine>("waking"); // boot starts the engine
 const keepAwakeRef = Ref.unsafeMake(false);
@@ -168,6 +175,8 @@ const onPushStarted = Effect.gen(function* () {
   if ((yield* Ref.get(stateRef)) !== "idle") {
     return yield* sound("refuse");
   }
+  yield* Ref.set(pressInFlightRef, true);
+  yield* Ref.set(releasedDuringStartRef, null);
   yield* cancelSleepTimer;
   if ((yield* Ref.get(engineRef)) === "sleeping") {
     yield* cmd("engine_start").pipe(Effect.ignore); // idempotent wake
@@ -185,14 +194,42 @@ const onPushStarted = Effect.gen(function* () {
       yield* show("idle");
     }),
   ),
+  // Replay a release that outran start_capture. If the press failed, state
+  // is back to idle and onPushFinished discards the parked stamp. Forked,
+  // not inlined: this is a finalizer, finalizers are UNINTERRUPTIBLE, and
+  // the take's 110s seatbelt works by interruption (see armSleepTimer).
+  Effect.ensuring(
+    Effect.gen(function* () {
+      yield* Ref.set(pressInFlightRef, false);
+      const parked = yield* Ref.get(releasedDuringStartRef);
+      yield* Ref.set(releasedDuringStartRef, null);
+      if (parked !== null) {
+        yield* onPushFinished(parked).pipe(Effect.interruptible, Effect.forkDaemon);
+      }
+    }),
+  ),
 );
 
 // Key came up. stop_and_transcribe is patient on the Rust side: if this
 // take raced an engine wake, it waits for warmth instead of failing.
 // keyUpMs is the OS-event wall-clock stamp from hotkey.rs — the take's
 // true t0, from before the event even reached this webview.
-const onPushFinished = (keyUpMs: number) => Effect.gen(function* () {
-  if ((yield* Ref.get(stateRef)) !== "recording") return;
+const onPushFinished = (keyUpMs: number): Effect.Effect<void> => Effect.gen(function* () {
+  if ((yield* Ref.get(stateRef)) !== "recording") {
+    // The release beat start_capture (a sub-100ms tap). Park the stamp
+    // for the press fiber's finalizer — dropping it left the mic
+    // recording until the next tap (regression ledger: the quick-tap
+    // stuck-recording bug). Any other stray release is ignored, and
+    // deliberately does NOT pass through the take's show("idle").
+    if (yield* Ref.get(pressInFlightRef)) {
+      yield* Ref.set(releasedDuringStartRef, keyUpMs);
+    }
+    return;
+  }
+  yield* runTake(keyUpMs);
+});
+
+const runTake = (keyUpMs: number) => Effect.gen(function* () {
   const tEntry = yield* Clock.currentTimeMillis;
   const t0 = keyUpMs > 0 ? keyUpMs : tEntry;
   yield* cmd("trigger_mode", { mode: "busy" satisfies TriggerMode }).pipe(Effect.ignore);
