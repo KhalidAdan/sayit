@@ -347,6 +347,39 @@ fn pill_state(app: tauri::AppHandle, pill: Pill) {
     }
 }
 
+/// Place the native waveform host bottom-center. WebKitGTK does not report
+/// its enforced ~200px minimum until the hidden window is first realized, so
+/// callers must reposition whenever GTK reports the real size.
+fn position_waveform(w: &tauri::WebviewWindow, size: tauri::PhysicalSize<u32>) {
+    if let Ok(Some(monitor)) = w.primary_monitor() {
+        let screen = monitor.size();
+        let x = screen.width.saturating_sub(size.width) / 2;
+        let y = screen.height.saturating_sub(size.height + 96);
+        let _ = w.set_position(tauri::PhysicalPosition::new(x as i32, y as i32));
+    }
+}
+
+fn init_waveform_window(app: &tauri::AppHandle) {
+    if let Some(w) = app.get_webview_window("waveform") {
+        let copy = w.clone();
+        let last_size = Mutex::new(w.outer_size().ok());
+        w.on_window_event(move |event| {
+            if let tauri::WindowEvent::Resized(size) = event {
+                // GTK emits one configure event for both moves and resizes,
+                // and Tao reports every configure as Resized. Deduplicate the
+                // size or set_position would feed back into this listener.
+                let mut previous = last_size.lock().unwrap();
+                if previous.as_ref() == Some(size) {
+                    return;
+                }
+                *previous = Some(*size);
+                drop(previous);
+                position_waveform(&copy, *size);
+            }
+        });
+    }
+}
+
 /// The waveform window sits bottom-center. It must NEVER take focus, or
 /// the paste lands in the wrong place — and since the pill now stays up
 /// through the paste, that rule is load-bearing. Two settings in
@@ -365,13 +398,15 @@ fn pill_state(app: tauri::AppHandle, pill: Pill) {
 /// Show/hide live on the Rust side so the webview needs no
 /// window-management capabilities.
 fn waveform_show(w: &tauri::WebviewWindow) {
-    if let (Ok(Some(monitor)), Ok(size)) = (w.primary_monitor(), w.outer_size()) {
-        let screen = monitor.size();
-        let x = screen.width.saturating_sub(size.width) / 2;
-        let y = screen.height.saturating_sub(size.height + 96);
-        let _ = w.set_position(tauri::PhysicalPosition::new(x as i32, y as i32));
+    if let Ok(size) = w.outer_size() {
+        position_waveform(w, size);
     }
     let _ = w.show();
+    // `show` realizes the GTK window. Re-read immediately when possible;
+    // the resize listener above is the backstop for asynchronous sizing.
+    if let Ok(size) = w.outer_size() {
+        position_waveform(w, size);
+    }
 }
 
 pub fn run() {
@@ -426,6 +461,7 @@ pub fn run() {
             *app.state::<MicChoice>().0.lock().unwrap() = saved.microphone.clone();
             dictionary::init(app.handle(), &saved);
             setup::init_window(app.handle());
+            init_waveform_window(app.handle());
             let platform = app.state::<Arc<platform::Current>>();
             platform
                 .build_tray(app.handle(), &saved)
