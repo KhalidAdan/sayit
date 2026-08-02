@@ -53,7 +53,7 @@ impl Platform for WindowsBackend {
     /// as the process. This wins the race before Tauri even builds — the
     /// single-instance plugin is the slower cross-platform half.
     fn acquire_single_instance() -> bool {
-        use windows_sys::Win32::Foundation::{ERROR_ALREADY_EXISTS, GetLastError};
+        use windows_sys::Win32::Foundation::{GetLastError, ERROR_ALREADY_EXISTS};
         use windows_sys::Win32::System::Threading::CreateMutexW;
         let name: Vec<u16> = "Local\\sayit-single-instance\0".encode_utf16().collect();
         unsafe {

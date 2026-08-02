@@ -18,8 +18,7 @@ const ENGINE_SIZE: u64 = 9_379_235;
 const CUDA_MANIFEST_URL: &str = "https://github.com/KhalidAdan/sayit/releases/download/engine-v1.9.1-cuda12.4/engine-linux-x86_64.json";
 const CUDA_MANIFEST_SIG_URL: &str = "https://github.com/KhalidAdan/sayit/releases/download/engine-v1.9.1-cuda12.4/engine-linux-x86_64.json.sig";
 const UPDATE_PUBKEY: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDI1QjFFMkUzQzJCQ0E2MApSV1JneWlzOExoNWJBbndKMzBOMXdCbmZIS3BaMDhsK0ozOFdOeklsZlBnb1NDSEVlbXo0elhUSgo=";
-const MODEL_URL: &str =
-    "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin";
+const MODEL_URL: &str = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin";
 const MODEL_SHA256: &str = "1be3a9b2063867b937e64e2ec7483364a79917e157fa98c5d94b5c1fffea987b";
 const MODEL_SIZE: u64 = 487_601_967;
 

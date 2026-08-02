@@ -14,7 +14,7 @@ use crate::platform::{Platform, PlatformInfo};
 use crate::settings::Settings;
 use crate::setup::SetupState;
 use std::path::PathBuf;
-use std::process::{Child, Command};
+use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, Manager};
