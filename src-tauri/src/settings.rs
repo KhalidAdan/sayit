@@ -16,6 +16,10 @@ pub struct Settings {
     /// Pin the engine awake (skip the idle sleep timer).
     #[serde(default)]
     pub keep_awake: bool,
+    /// Play the soundpack's accept slot after text lands. Voice is opt-in:
+    /// existing settings files and fresh installs both stay silent.
+    #[serde(default)]
+    pub completion_voice: bool,
     /// Minutes of idle before the engine sleeps and its VRAM comes home.
     /// Edit settings.json to change it; 0 disables auto-sleep entirely
     /// (same effect as keep_awake). Kept small on purpose — an idle engine
@@ -45,6 +49,7 @@ impl Default for Settings {
         Self {
             microphone: None,
             keep_awake: false,
+            completion_voice: false,
             idle_minutes: default_idle_minutes(),
             replacements: Vec::new(),
             setup_complete: false,
@@ -76,5 +81,17 @@ pub fn save(app: &AppHandle, settings: &Settings) {
     }
     if let Ok(json) = serde_json::to_string_pretty(settings) {
         let _ = std::fs::write(p, json);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn completion_voice_is_opt_in_for_existing_settings() {
+        let saved: Settings = serde_json::from_str(r#"{"keep_awake":true}"#).unwrap();
+        assert!(saved.keep_awake);
+        assert!(!saved.completion_voice);
     }
 }

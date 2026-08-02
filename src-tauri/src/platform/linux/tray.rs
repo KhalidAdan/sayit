@@ -14,6 +14,7 @@ pub(super) struct SayitTray {
     microphone: Option<String>,
     microphones: Vec<Option<String>>,
     keep_awake: bool,
+    completion_voice: bool,
     autostart: bool,
 }
 
@@ -90,6 +91,18 @@ impl ksni::Tray for SayitTray {
             }
             .into(),
             CheckmarkItem {
+                label: "Completion voice".into(),
+                checked: self.completion_voice,
+                activate: Box::new(|this: &mut Self| {
+                    this.completion_voice = !this.completion_voice;
+                    let mut saved = settings::load(&this.app);
+                    saved.completion_voice = this.completion_voice;
+                    settings::save(&this.app, &saved);
+                }),
+                ..Default::default()
+            }
+            .into(),
+            CheckmarkItem {
                 label: "Keep engine awake".into(),
                 checked: self.keep_awake,
                 activate: Box::new(|this: &mut Self| {
@@ -161,6 +174,7 @@ pub(super) fn build(
         microphone: saved.microphone.clone(),
         microphones,
         keep_awake: saved.keep_awake,
+        completion_voice: saved.completion_voice,
         autostart: app.autolaunch().is_enabled().unwrap_or(false),
     };
     let handle = tray.spawn().map_err(|e| e.to_string())?;

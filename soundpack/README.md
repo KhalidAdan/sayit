@@ -12,8 +12,9 @@ the filename is the hook.
 Rules:
 
 - WAV, OGG, or MP3. First match in that order wins.
-- A missing file is a silent slot. Silence is a legitimate choice — `accept`
-  is deliberately empty, because the text appearing *is* the confirmation.
+- A missing file is a silent slot. Silence is a legitimate choice.
+- Completion voice is disabled by default even when `accept` exists. Enable
+  **Completion voice** from the tray to opt in.
 - Keep them short (under ~300ms) and quiet. `press` plays while the mic is
   already recording; a long or loud sound can bleed into your take.
 - Files load once at app start — after swapping sounds, restart sayit.

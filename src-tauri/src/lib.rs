@@ -116,7 +116,11 @@ async fn inject_text(
 }
 
 #[tauri::command]
-fn play_sound(slot: String, sounds: tauri::State<sounds::Sounds>) {
+fn play_sound(app: tauri::AppHandle, slot: String, sounds: tauri::State<sounds::Sounds>) {
+    if slot == "accept" && !settings::load(&app).completion_voice {
+        println!("[sayit] sound: accept (voice disabled)");
+        return;
+    }
     println!("[sayit] sound: {slot}");
     sounds.play(&slot);
 }

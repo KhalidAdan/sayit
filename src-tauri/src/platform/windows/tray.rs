@@ -75,6 +75,14 @@ pub(super) fn build(
         saved.keep_awake,
         None::<&str>,
     )?;
+    let completion_voice = CheckMenuItem::with_id(
+        app,
+        "completionvoice",
+        "Completion voice",
+        true,
+        saved.completion_voice,
+        None::<&str>,
+    )?;
 
     // The dictionary: the one piece of sayit that needs a real window —
     // rows of text want a text editor, not a menu.
@@ -95,6 +103,7 @@ pub(super) fn build(
             &PredefinedMenuItem::separator(app)?,
             &mics,
             &dictionary,
+            &completion_voice,
             &keep_awake,
             &autostart,
             &PredefinedMenuItem::separator(app)?,
@@ -124,6 +133,12 @@ pub(super) fn build(
                     .spawn();
             } else if id == "dictionary" {
                 crate::dictionary::show(app);
+            } else if id == "completionvoice" {
+                let on = completion_voice.is_checked().unwrap_or(false);
+                println!("[sayit] completion voice: {on}");
+                let mut saved = settings::load(app);
+                saved.completion_voice = on;
+                settings::save(app, &saved);
             } else if id == "keepawake" {
                 // The item toggles itself; report the new state upward, let
                 // the coordinator manage its timer, and persist the choice.
