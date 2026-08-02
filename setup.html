@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en" class="scheme-only-dark antialiased">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>sayit — this machine</title>
+    <link rel="stylesheet" href="/src/setup.css" />
+  </head>
+  <body>
+    <main>
+      <header>
+        <div class="gesture" aria-hidden="true">
+          <kbd id="key-one">Ctrl</kbd><span></span><kbd id="key-two">Ctrl</kbd>
+        </div>
+        <p class="eyebrow">The key that listens</p>
+        <h1 id="title">Teach sayit this machine.</h1>
+        <p class="lede">
+          Two taps start listening. One tap finishes the thought. Before the key disappears,
+          check the circuit once.
+        </p>
+      </header>
+
+      <section class="circuit" aria-label="Machine readiness">
+        <article class="check" data-check="keyboard">
+          <div class="node" aria-hidden="true"></div>
+          <div><h2>Control trigger</h2><p id="keyboard-detail">Looking for a keyboard…</p></div>
+          <strong id="keyboard-state">Checking</strong>
+        </article>
+        <article class="check" data-check="uinput">
+          <div class="node" aria-hidden="true"></div>
+          <div><h2>Typing</h2><p id="uinput-detail">Checking the virtual key…</p></div>
+          <strong id="uinput-state">Checking</strong>
+        </article>
+        <article class="check" data-check="microphone">
+          <div class="node" aria-hidden="true"></div>
+          <div><h2>Microphone</h2><p id="microphone-detail">Looking for an input…</p></div>
+          <strong id="microphone-state">Checking</strong>
+        </article>
+        <article class="check" data-check="engine">
+          <div class="node" aria-hidden="true"></div>
+          <div>
+            <h2>Local engine</h2>
+            <p id="engine-detail">Whisper small · stays on this machine</p>
+            <div class="progress" hidden><span id="progress-bar"></span></div>
+            <p id="progress-copy" class="progress-copy" aria-live="polite"></p>
+          </div>
+          <strong id="engine-state">Needed</strong>
+        </article>
+      </section>
+
+      <section class="proof" aria-labelledby="proof-title">
+        <div>
+          <h2 id="proof-title">Prove the last inch</h2>
+          <p>Focus stays here while sayit sends a contained test paste.</p>
+        </div>
+        <div class="proof-row">
+          <input id="paste-target" aria-label="Injection test result" placeholder="Test text lands here" />
+          <button id="test-paste" class="quiet" type="button">Test typing</button>
+          <button id="test-sound" class="icon-button" type="button" aria-label="Test recording sound">♪</button>
+        </div>
+      </section>
+
+      <aside class="privacy">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1.25 2.5 3.3v3.9c0 3.3 2.3 6.2 5.5 7.55 3.2-1.35 5.5-4.25 5.5-7.55V3.3L8 1.25Zm0 1.6 4 1.5V7.2c0 2.45-1.6 4.7-4 5.85-2.4-1.15-4-3.4-4-5.85V4.35l4-1.5Z"/></svg>
+        <p><strong>Nothing typed is read.</strong> sayit inspects events only long enough to identify clean left-Control or remapped-Caps taps. Every other event is discarded immediately and no keys are logged.</p>
+      </aside>
+
+      <p id="error" role="alert" hidden></p>
+      <footer>
+        <button id="prepare" class="primary" type="button">Prepare this machine</button>
+        <button id="finish" class="primary" type="button" hidden>Start sayit</button>
+        <button id="close" class="quiet" type="button">Not now</button>
+      </footer>
+    </main>
+    <script type="module" src="/src/setup.ts"></script>
+  </body>
+</html>

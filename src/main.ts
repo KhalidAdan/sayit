@@ -15,6 +15,8 @@ import { Clock, Data, Duration, Effect, Fiber, Ref } from "effect";
 
 type State = "idle" | "recording" | "transcribing" | "injecting";
 type Engine = "sleeping" | "waking" | "ready";
+type TriggerMode = "idle" | "starting" | "recording" | "busy";
+type PlatformInfo = { os: "windows" | "linux"; triggerHint: string };
 
 // What stop_and_transcribe returns now: the text plus where the Rust side
 // spent its time. Mirrors `Take` in lib.rs (serde renames to camelCase).
@@ -70,6 +72,10 @@ const engineRef = Ref.unsafeMake<Engine>("waking"); // boot starts the engine
 const keepAwakeRef = Ref.unsafeMake(false);
 const lastGapMs = Ref.unsafeMake<number | null>(null);
 const updateReadyRef = Ref.unsafeMake<string | null>(null);
+const platformRef = Ref.unsafeMake<PlatformInfo>({
+  os: "windows",
+  triggerHint: "hold F9 to dictate",
+});
 const sleepTimerRef = Ref.unsafeMake<Fiber.RuntimeFiber<void, never> | null>(null);
 
 // ---- the engine's metabolism ----------------------------------------
@@ -114,6 +120,7 @@ const show = (next: State): Effect.Effect<void> =>
       document.body.dataset.state = next;
     });
     if (next === "idle") {
+      yield* cmd("trigger_mode", { mode: "idle" satisfies TriggerMode }).pipe(Effect.ignore);
       const engine = yield* Ref.get(engineRef);
       const heardNothing = yield* Ref.get(heardNothingRef);
       if (heardNothing) {
@@ -136,8 +143,9 @@ const show = (next: State): Effect.Effect<void> =>
       } else {
         const gap = yield* Ref.get(lastGapMs);
         const update = yield* Ref.get(updateReadyRef);
+        const platform = yield* Ref.get(platformRef);
         const base =
-          gap === null ? "ready — hold F9 to dictate" : `ready — last take ${gap}ms`;
+          gap === null ? `ready — ${platform.triggerHint}` : `ready — last take ${gap}ms`;
         yield* trayStatus(
           update === null ? base : `${base} · v${update} ready on restart`,
         );
@@ -166,6 +174,7 @@ const onPushStarted = Effect.gen(function* () {
     yield* Ref.set(engineRef, "waking");
   }
   yield* cmd("start_capture");
+  yield* cmd("trigger_mode", { mode: "recording" satisfies TriggerMode });
   yield* show("recording");
   yield* sound("press");
 }).pipe(
@@ -186,6 +195,7 @@ const onPushFinished = (keyUpMs: number) => Effect.gen(function* () {
   if ((yield* Ref.get(stateRef)) !== "recording") return;
   const tEntry = yield* Clock.currentTimeMillis;
   const t0 = keyUpMs > 0 ? keyUpMs : tEntry;
+  yield* cmd("trigger_mode", { mode: "busy" satisfies TriggerMode }).pipe(Effect.ignore);
   yield* show("transcribing");
   // Timeout is the coordinator's own seatbelt: whatever the Rust side
   // does — hung device, dead engine — this state machine returns to idle.
@@ -293,6 +303,7 @@ const becomeReady = Effect.gen(function* () {
 // The persisted keep-awake preference is pulled the same way.
 void Effect.runPromise(
   Effect.gen(function* () {
+    yield* Ref.set(platformRef, yield* cmd<PlatformInfo>("platform_info"));
     yield* Ref.set(keepAwakeRef, yield* cmd<boolean>("get_keep_awake"));
     if (yield* cmd<boolean>("is_ready")) yield* becomeReady;
   }).pipe(Effect.ignore),

@@ -50,11 +50,16 @@ pub async fn transcribe_waiting(
                 }
                 return Ok((text, timing));
             }
-            Err(e) if started.elapsed() < deadline => {
-                let _ = e; // engine still waking; keep trying
+            // Only a refused localhost connection means "still waking".
+            // Bad audio and HTTP/JSON errors are real failures; retrying those
+            // for 90 seconds turns a useful refusal into a silent hang.
+            Err(e) if e.starts_with("sidecar unreachable:") && started.elapsed() < deadline => {
                 tokio::time::sleep(Duration::from_millis(500)).await;
             }
-            Err(e) => return Err(format!("engine never answered: {e}")),
+            Err(e) if e.starts_with("sidecar unreachable:") => {
+                return Err(format!("engine never answered: {e}"));
+            }
+            Err(e) => return Err(e),
         }
     }
 }
@@ -84,8 +89,14 @@ pub async fn transcribe(samples: Vec<f32>) -> Result<(String, Timing), String> {
         .send()
         .await
         .map_err(|e| format!("sidecar unreachable: {e}"))?;
+    let status = response.status();
     // Reading the body is still the network; it belongs to http_ms.
-    let body: serde_json::Value = response.json().await.map_err(|e| e.to_string())?;
+    let bytes = response.bytes().await.map_err(|e| e.to_string())?;
+    if !status.is_success() {
+        let detail = String::from_utf8_lossy(&bytes);
+        return Err(format!("sidecar returned {status}: {}", detail.trim()));
+    }
+    let body: serde_json::Value = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
     timing.http_ms = t.elapsed().as_millis() as u64;
 
     let t = Instant::now();
@@ -155,7 +166,9 @@ mod tests {
     #[test]
     fn markers_are_dropped_but_speech_survives() {
         assert_eq!(
-            strip_markers("(door slams) hello there [MUSIC] friend").split_whitespace().collect::<Vec<_>>(),
+            strip_markers("(door slams) hello there [MUSIC] friend")
+                .split_whitespace()
+                .collect::<Vec<_>>(),
             vec!["hello", "there", "friend"]
         );
     }
@@ -169,7 +182,10 @@ mod tests {
     fn unbalanced_close_bracket_does_not_eat_text() {
         // saturating_sub means a stray "]" can't push depth negative and
         // swallow the rest of the sentence.
-        assert_eq!(strip_markers("] still here"), "] still here".replace(']', ""));
+        assert_eq!(
+            strip_markers("] still here"),
+            "] still here".replace(']', "")
+        );
     }
 
     #[test]

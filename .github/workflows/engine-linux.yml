@@ -1,0 +1,87 @@
+# Infrequent companion build. The signed manifest lets released apps select
+# this RTX-3070 CUDA engine; if it is absent they bootstrap the official CPU
+# build instead of becoming unusable.
+name: Linux CUDA engine
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  ENGINE_TAG: engine-v1.9.1-cuda12.4
+  ENGINE_ARCHIVE: whisper-cuda-linux-x86_64.tar.gz
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container: nvidia/cuda:12.4.1-devel-ubuntu22.04
+    steps:
+      - name: Install build tools
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y git gh cmake ninja-build patchelf curl ca-certificates
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+      - name: Build whisper-server for Ampere
+        run: |
+          git clone --depth 1 --branch v1.9.1 https://github.com/ggml-org/whisper.cpp.git /tmp/whisper.cpp
+          # The runner has a toolkit but no mounted NVIDIA driver. The compat
+          # stubs satisfy the build-time libcuda link; the real driver is used
+          # on the target machine. CUDA runtime/cuBLAS are linked statically so
+          # the companion does not require a system CUDA toolkit.
+          export LDFLAGS="-L/usr/local/cuda-12.4/compat -Wl,-rpath-link,/usr/local/cuda-12.4/compat"
+          cmake -S /tmp/whisper.cpp -B /tmp/whisper.cpp/build -G Ninja \
+            -DGGML_CUDA=ON \
+            -DGGML_CUDA_NCCL=OFF \
+            -DGGML_STATIC=ON \
+            -DCMAKE_CUDA_ARCHITECTURES=86 \
+            -DWHISPER_BUILD_TESTS=OFF \
+            -DWHISPER_BUILD_EXAMPLES=ON \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DCMAKE_BUILD_TYPE=Release
+          cmake --build /tmp/whisper.cpp/build --target whisper-server --parallel 2
+          mkdir -p whisper-cuda
+          cp /tmp/whisper.cpp/build/bin/whisper-server whisper-cuda/
+          chmod 755 whisper-cuda/whisper-server
+          if LD_LIBRARY_PATH=/usr/local/cuda-12.4/compat ldd whisper-cuda/whisper-server | grep 'not found'; then
+            echo 'CUDA engine has unpackaged runtime dependencies' >&2
+            exit 1
+          fi
+          tar --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner \
+            -czf "$ENGINE_ARCHIVE" whisper-cuda
+      - name: Finalize manifest and signature
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          export SHA=$(sha256sum "$ENGINE_ARCHIVE" | cut -d' ' -f1)
+          export SIZE=$(stat -c%s "$ENGINE_ARCHIVE")
+          node <<'NODE'
+          const fs=require('fs');
+          fs.writeFileSync('engine-linux-x86_64.json', JSON.stringify({
+            backend:'cuda-12.4-sm86',
+            url:`https://github.com/${process.env.GITHUB_REPOSITORY}/releases/download/${process.env.ENGINE_TAG}/${process.env.ENGINE_ARCHIVE}`,
+            size:Number(process.env.SIZE),
+            sha256:process.env.SHA,
+            archiveRoot:'whisper-cuda'
+          }, null, 2) + '\n');
+          NODE
+          npx tauri signer sign engine-linux-x86_64.json
+      - name: Publish companion release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if gh release view "$ENGINE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$ENGINE_TAG" --repo "$GITHUB_REPOSITORY" --clobber \
+              "$ENGINE_ARCHIVE" engine-linux-x86_64.json engine-linux-x86_64.json.sig
+          else
+            gh release create "$ENGINE_TAG" --repo "$GITHUB_REPOSITORY" \
+              --title "sayit Linux CUDA engine · whisper.cpp v1.9.1" \
+              --notes "Pinned local inference companion for Linux x86_64 / CUDA 12.4 / SM 8.6." \
+              "$ENGINE_ARCHIVE" engine-linux-x86_64.json engine-linux-x86_64.json.sig
+          fi

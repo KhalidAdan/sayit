@@ -137,7 +137,10 @@ fn apply_one(text: &str, from: &str, to: &str) -> String {
     while i < chars.len() {
         let end = i + pattern.len();
         let hit = end <= chars.len()
-            && chars[i..end].iter().zip(&pattern).all(|(&a, &b)| ci_eq(a, b))
+            && chars[i..end]
+                .iter()
+                .zip(&pattern)
+                .all(|(&a, &b)| ci_eq(a, b))
             && !(guard_start && i > 0 && is_word(chars[i - 1]))
             && !(guard_end && end < chars.len() && is_word(chars[end]));
         if hit {
@@ -156,7 +159,10 @@ mod tests {
     use super::*;
 
     fn rule(from: &str, to: &str) -> Replacement {
-        Replacement { from: from.into(), to: to.into() }
+        Replacement {
+            from: from.into(),
+            to: to.into(),
+        }
     }
 
     #[test]
@@ -208,6 +214,9 @@ mod tests {
     fn replacement_at_string_edges() {
         let rules = [rule("clod", "Claude")];
         assert_eq!(apply(&rules, "clod"), "Claude");
-        assert_eq!(apply(&rules, "clod at start and end clod"), "Claude at start and end Claude");
+        assert_eq!(
+            apply(&rules, "clod at start and end clod"),
+            "Claude at start and end Claude"
+        );
     }
 }

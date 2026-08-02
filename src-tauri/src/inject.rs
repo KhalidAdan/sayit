@@ -3,8 +3,11 @@
 //! window is never shown, so the app the user was dictating into still owns
 //! the cursor, and the paste lands there.
 
+#[cfg(windows)]
 use enigo::{Direction, Enigo, Key, Keyboard, Settings};
+#[cfg(windows)]
 use std::thread::sleep;
+#[cfg(windows)]
 use std::time::{Duration, Instant};
 
 /// Where the paste's milliseconds went. The key split is visible_ms vs
@@ -30,6 +33,7 @@ pub struct InjectTiming {
     pub total_ms: u64,
 }
 
+#[cfg(windows)]
 pub fn inject(text: &str) -> Result<InjectTiming, String> {
     let t_all = Instant::now();
 
@@ -97,4 +101,9 @@ pub fn inject(text: &str) -> Result<InjectTiming, String> {
         timing.total_ms
     );
     Ok(timing)
+}
+
+#[cfg(target_os = "linux")]
+pub fn inject(text: &str, input: &crate::linux_input::LinuxInput) -> Result<InjectTiming, String> {
+    input.inject(text.to_owned())
 }

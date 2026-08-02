@@ -1,0 +1,164 @@
+@import "tailwindcss";
+
+:root {
+  color: #f4f4f5;
+  background: #09090b;
+  font-family: "Adwaita Sans", "Segoe UI Variable", system-ui, sans-serif;
+  font-synthesis: none;
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; min-height: 100vh; background: #09090b; }
+button, input { font: inherit; }
+button { color: inherit; }
+
+main {
+  width: min(100%, 560px);
+  margin: 0 auto;
+  padding: 30px 34px 28px;
+}
+
+header { position: relative; padding-right: 150px; }
+.eyebrow {
+  margin: 0 0 8px;
+  color: #e8b04a;
+  font: 600 11px/1 "Adwaita Mono", ui-monospace, monospace;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+}
+h1 { margin: 0; font-size: 28px; line-height: 1.08; letter-spacing: -.035em; }
+.lede { margin: 11px 0 0; color: #a1a1aa; font-size: 14px; line-height: 1.5; }
+
+.gesture {
+  position: absolute;
+  top: 2px;
+  right: 0;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.gesture span { width: 8px; height: 1px; background: #3f3f46; }
+kbd {
+  display: grid;
+  width: 56px;
+  height: 46px;
+  place-items: center;
+  border: 1px solid #3f3f46;
+  border-bottom-width: 4px;
+  border-radius: 8px;
+  background: #18181b;
+  color: #d4d4d8;
+  font: 600 11px/1 "Adwaita Mono", ui-monospace, monospace;
+  transition: transform 100ms, border-color 100ms, color 100ms;
+}
+kbd.live { transform: translateY(3px); border-bottom-width: 1px; border-color: #e8b04a; color: #f6ca77; }
+
+.circuit { position: relative; margin-top: 27px; }
+.circuit::before {
+  content: "";
+  position: absolute;
+  top: 23px;
+  bottom: 23px;
+  left: 7px;
+  width: 1px;
+  background: #27272a;
+}
+.check {
+  position: relative;
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr) auto;
+  gap: 12px;
+  min-height: 61px;
+  align-items: start;
+}
+.check .node {
+  z-index: 1;
+  width: 15px;
+  height: 15px;
+  margin-top: 3px;
+  border: 4px solid #09090b;
+  border-radius: 50%;
+  background: #52525b;
+  box-shadow: 0 0 0 1px #3f3f46;
+}
+.check.ok .node { background: #e8b04a; box-shadow: 0 0 0 1px #e8b04a; }
+.check.fail .node { background: #f87171; box-shadow: 0 0 0 1px #f87171; }
+.check h2, .proof h2 { margin: 0; font-size: 13px; font-weight: 650; }
+.check p, .proof p { margin: 3px 0 0; color: #71717a; font-size: 11px; line-height: 1.35; }
+.check strong {
+  margin-top: 1px;
+  color: #71717a;
+  font: 500 10px/1.5 "Adwaita Mono", ui-monospace, monospace;
+  text-transform: uppercase;
+}
+.check.ok strong { color: #e8b04a; }
+.check.fail strong { color: #f87171; }
+
+.progress { height: 3px; margin-top: 8px; overflow: hidden; border-radius: 99px; background: #27272a; }
+.progress span { display: block; width: 0; height: 100%; background: #e8b04a; transition: width 180ms linear; }
+.progress-copy { font-family: "Adwaita Mono", ui-monospace, monospace; }
+
+.proof {
+  margin: 4px 0 0 28px;
+  padding: 14px;
+  border: 1px solid #27272a;
+  border-radius: 10px;
+  background: #111113;
+}
+.proof-row { display: flex; gap: 7px; margin-top: 10px; }
+input {
+  min-width: 0;
+  flex: 1;
+  border: 1px solid #3f3f46;
+  border-radius: 7px;
+  outline: none;
+  background: #09090b;
+  padding: 7px 9px;
+  color: #f4f4f5;
+  font-size: 12px;
+}
+input:focus { border-color: #e8b04a; box-shadow: 0 0 0 2px rgba(232,176,74,.15); }
+
+button {
+  border: 0;
+  border-radius: 7px;
+  cursor: pointer;
+  padding: 8px 12px;
+  font-size: 12px;
+  font-weight: 650;
+}
+button:disabled { cursor: wait; opacity: .5; }
+button:focus-visible { outline: 2px solid #e8b04a; outline-offset: 2px; }
+.primary { background: #e8b04a; color: #18130a; }
+.primary:hover:not(:disabled) { background: #f0bf64; }
+.quiet { background: #27272a; color: #d4d4d8; }
+.quiet:hover:not(:disabled) { background: #3f3f46; }
+.icon-button { width: 34px; padding: 0; background: transparent; color: #a1a1aa; box-shadow: inset 0 0 0 1px #3f3f46; }
+
+.privacy {
+  display: grid;
+  grid-template-columns: 16px 1fr;
+  gap: 9px;
+  margin: 17px 0 0 28px;
+  color: #71717a;
+}
+.privacy svg { width: 16px; fill: #71717a; }
+.privacy p { margin: 0; font-size: 11px; line-height: 1.45; }
+.privacy strong { color: #a1a1aa; }
+#error {
+  margin: 14px 0 0 28px;
+  border-left: 2px solid #f87171;
+  padding-left: 10px;
+  color: #fca5a5;
+  font: 11px/1.45 "Adwaita Mono", ui-monospace, monospace;
+}
+footer { display: flex; gap: 8px; margin: 20px 0 0 28px; }
+
+@media (max-width: 520px) {
+  main { padding-inline: 22px; }
+  header { padding-right: 0; padding-top: 64px; }
+  .gesture { left: 0; right: auto; }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { transition-duration: 0s !important; }
+}

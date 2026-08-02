@@ -19,6 +19,10 @@ pub struct Settings {
     /// The dictionary: applied in order to every transcript, before the paste.
     #[serde(default)]
     pub replacements: Vec<Replacement>,
+    /// Linux bootstrap completed at least once. Windows intentionally ignores
+    /// this field so existing installs never acquire onboarding.
+    #[serde(default)]
+    pub linux_setup_complete: bool,
 }
 
 fn path(app: &AppHandle) -> Option<std::path::PathBuf> {
