@@ -65,7 +65,7 @@ fn start_hotkey_once(app: &AppHandle) -> Result<(), String> {
 #[cfg(target_os = "linux")]
 pub fn start_normal(app: &AppHandle) {
     let saved = crate::settings::load(app);
-    if !saved.linux_setup_complete {
+    if !saved.setup_complete {
         crate::tray::set_status(app, "setup required — open sayit");
         show(app);
         return;
@@ -151,7 +151,7 @@ pub fn setup_snapshot(app: AppHandle) -> Snapshot {
 
     let last_error = state.error.lock().unwrap().clone();
     Snapshot {
-        first_run: cfg!(target_os = "linux") && !crate::settings::load(&app).linux_setup_complete,
+        first_run: cfg!(target_os = "linux") && !crate::settings::load(&app).setup_complete,
         running: state.running.load(Ordering::Relaxed),
         ready: state.ready.load(Ordering::Relaxed),
         keyboard_ok,
@@ -236,7 +236,7 @@ pub fn setup_finish(app: AppHandle) -> Result<(), String> {
         }
         start_hotkey_once(&app)?;
         let mut saved = crate::settings::load(&app);
-        saved.linux_setup_complete = true;
+        saved.setup_complete = true;
         crate::settings::save(&app, &saved);
         crate::tray::set_status(&app, "ready — double-tap left Ctrl or remapped Caps");
         if let Some(window) = app.get_webview_window("setup") {

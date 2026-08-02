@@ -33,13 +33,6 @@ arboard = { version = "3", features = ["wayland-data-control"] }
 reqwest = { version = "0.12", default-features = false, features = ["multipart", "json", "stream"] }
 tokio = { version = "1", features = ["time"] }
 rodio = "0.20"
-sha2 = "0.10"
-futures-util = "0.3"
-flate2 = "1"
-tar = "0.4"
-base64 = "0.22"
-minisign-verify = "0.2"
-
 [target.'cfg(windows)'.dependencies]
 tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-global-shortcut = "2"
@@ -55,3 +48,11 @@ windows-sys = { version = "0.61", features = [
 evdev = "0.13"
 ksni = { version = "0.3", features = ["blocking"] }
 libc = "0.2"
+# The asset pipeline (platform/linux/assets.rs) is this table's only consumer:
+# Windows ships companions next to the exe and downloads nothing.
+sha2 = "0.10"
+futures-util = "0.3"
+flate2 = "1"
+tar = "0.4"
+base64 = "0.22"
+minisign-verify = "0.2"

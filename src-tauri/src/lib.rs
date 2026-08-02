@@ -368,7 +368,7 @@ pub fn run() {
         // Must be the first plugin: a second process must never race the
         // sidecar, updater, clipboard, or event-device listener.
         .plugin(tauri_plugin_single_instance::init(|app, _, _| {
-            if !settings::load(app).linux_setup_complete && cfg!(target_os = "linux") {
+            if !settings::load(app).setup_complete && cfg!(target_os = "linux") {
                 setup::show(app);
             } else {
                 tray::set_status(app, "already running");
