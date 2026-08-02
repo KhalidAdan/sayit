@@ -17,6 +17,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The platform layer's one rule: OS cfgs live in platform/mod.rs and
+      # nowhere else. The matrix legs prove each backend implements the full
+      # Platform trait; this proves nobody went around it.
+      - name: platform cfg tripwire
+        shell: bash
+        working-directory: src-tauri
+        run: |
+          if grep -rnE 'cfg(_attr)?!?\(.*\b(windows|target_os|target_family|unix)\b' \
+               --include='*.rs' src \
+             | grep -vE '^src/platform/mod\.rs:|windows_subsystem'; then
+            echo "::error::platform cfg found outside src/platform/mod.rs — implement it in the Platform trait instead"
+            exit 1
+          fi
+
       - uses: actions/setup-node@v4
         with:
           node-version: 22

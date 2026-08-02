@@ -1,14 +1,17 @@
-//! Stage 1: the key. Windows keeps the physical hold-F9 gesture. Linux
-//! listens to evdev for a clean double-tap of left Control to start and one
-//! clean tap to stop. Both backends collapse OS input into the same two
-//! events consumed by the coordinator.
+//! Stage 1: the key — the OS-free half. The pure gesture state machine
+//! that turns raw key transitions into `push_started` / `push_finished`,
+//! shared by every platform backend. How those transitions are observed
+//! (global-shortcut plugin on Windows, evdev on Linux) lives in
+//! `platform/`; this module never touches the OS, which is why all eight
+//! of its tests run everywhere.
+
+// On Windows the machine is compiled but unfed — the global-shortcut
+// plugin reports press/release directly and never produces KeyTransitions,
+// so dead-code analysis fires there. Linux feeds it for real, and the
+// tests exercise it on every target.
+#![allow(dead_code)]
 
 use std::sync::Mutex;
-use tauri::{AppHandle, Emitter};
-
-/// The Windows push-to-talk key. Linux advertises its gesture separately.
-#[cfg(windows)]
-pub const PUSH_TO_TALK: &str = "F9";
 
 const DOUBLE_TAP_MS: u64 = 400;
 /// Composite USB keyboards can publish the same physical key through more
@@ -26,14 +29,14 @@ pub enum TriggerMode {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum KeyTransition {
+pub(crate) enum KeyTransition {
     LeftDown,
     LeftUp,
     OtherDown,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Gesture {
+pub(crate) enum Gesture {
     Started,
     Finished,
 }
@@ -141,6 +144,15 @@ impl HotkeyState {
 #[derive(Default)]
 pub struct HotkeyControl(Mutex<HotkeyState>);
 
+impl HotkeyControl {
+    /// Feed one raw key transition through duplicate-coalescing and the
+    /// gesture machine. Platform listeners call this; the pure state stays
+    /// in here where the tests are.
+    pub(crate) fn event(&self, transition: KeyTransition, at_ms: u64) -> Option<Gesture> {
+        self.0.lock().unwrap().event(transition, at_ms)
+    }
+}
+
 pub fn set_mode(control: &HotkeyControl, mode: TriggerMode) {
     // Keep the duplicate timestamps across this transition: another interface
     // may deliver the same physical release after the coordinator has already
@@ -150,226 +162,12 @@ pub fn set_mode(control: &HotkeyControl, mode: TriggerMode) {
 
 /// Wall-clock milliseconds, stamped where the OS event is observed and
 /// carried to the webview for end-to-end gap accounting.
-fn now_ms() -> u64 {
+pub(crate) fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
 }
-
-#[cfg(windows)]
-mod windows {
-    use super::*;
-    use std::sync::atomic::{AtomicBool, Ordering};
-    use tauri_plugin_global_shortcut::ShortcutState;
-
-    static HELD: AtomicBool = AtomicBool::new(false);
-
-    pub fn on_shortcut(app: &AppHandle, state: ShortcutState) {
-        match state {
-            ShortcutState::Pressed => {
-                if !HELD.swap(true, Ordering::SeqCst) {
-                    let _ = app.emit("push_started", now_ms());
-                }
-            }
-            ShortcutState::Released => {
-                if HELD.swap(false, Ordering::SeqCst) {
-                    let _ = app.emit("push_finished", now_ms());
-                }
-            }
-        }
-    }
-}
-
-#[cfg(windows)]
-pub use windows::on_shortcut;
-
-#[cfg(target_os = "linux")]
-mod linux {
-    use super::*;
-    use evdev::{enumerate, EventSummary, KeyCode};
-    use std::collections::HashSet;
-    use std::path::PathBuf;
-    use std::sync::{mpsc, Arc};
-    use std::time::{Duration, Instant};
-    use tauri::Manager;
-
-    fn caps_is_control() -> bool {
-        if std::env::var_os("SAYIT_CAPS_AS_CTRL").is_some() {
-            return true;
-        }
-        // GNOME applies XKB after evdev. At this layer a remapped Caps key is
-        // still KEY_CAPSLOCK, so mirror the effective options explicitly.
-        let output = std::process::Command::new("/usr/bin/gsettings")
-            .args(["get", "org.gnome.desktop.input-sources", "xkb-options"])
-            .output();
-        let Ok(output) = output else { return false };
-        let options = String::from_utf8_lossy(&output.stdout);
-        [
-            "ctrl:nocaps",
-            "ctrl:swapcaps",
-            "ctrl:grouptoggle_capscontrol",
-            "ctrl:hyper_capscontrol",
-        ]
-        .iter()
-        .any(|option| options.contains(option))
-    }
-
-    fn is_keyboard(device: &evdev::Device) -> bool {
-        let name = device.name().unwrap_or_default();
-        if name.starts_with("sayit ") || device.supported_relative_axes().is_some() {
-            return false;
-        }
-        device.supported_keys().is_some_and(|keys| {
-            keys.contains(KeyCode::KEY_LEFTCTRL)
-                && keys.contains(KeyCode::KEY_A)
-                && keys.contains(KeyCode::KEY_SPACE)
-        })
-    }
-
-    fn spawn_device(
-        path: PathBuf,
-        mut device: evdev::Device,
-        app: AppHandle,
-        active: Arc<Mutex<HashSet<PathBuf>>>,
-        epoch: Instant,
-        caps_as_control: bool,
-    ) {
-        std::thread::spawn(move || {
-            println!(
-                "[input] listening to {} ({})",
-                device.name().unwrap_or("keyboard"),
-                path.display()
-            );
-            loop {
-                let events = match device.fetch_events() {
-                    Ok(events) => events,
-                    Err(e) => {
-                        eprintln!("[input] {} disconnected: {e}", path.display());
-                        break;
-                    }
-                };
-                for event in events {
-                    let transition = match event.destructure() {
-                        EventSummary::Key(_, key, 1)
-                            if key == KeyCode::KEY_LEFTCTRL
-                                || (caps_as_control && key == KeyCode::KEY_CAPSLOCK) =>
-                        {
-                            Some(KeyTransition::LeftDown)
-                        }
-                        EventSummary::Key(_, key, 0)
-                            if key == KeyCode::KEY_LEFTCTRL
-                                || (caps_as_control && key == KeyCode::KEY_CAPSLOCK) =>
-                        {
-                            Some(KeyTransition::LeftUp)
-                        }
-                        // Value 2 is key repeat and deliberately ignored.
-                        EventSummary::Key(_, key, 1)
-                            if key != KeyCode::KEY_LEFTCTRL
-                                && !(caps_as_control && key == KeyCode::KEY_CAPSLOCK) =>
-                        {
-                            Some(KeyTransition::OtherDown)
-                        }
-                        _ => None,
-                    };
-                    let Some(transition) = transition else {
-                        continue;
-                    };
-                    let elapsed = event
-                        .timestamp()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map(|duration| duration.as_millis() as u64)
-                        .unwrap_or_else(|_| epoch.elapsed().as_millis() as u64);
-                    let gesture = app
-                        .state::<HotkeyControl>()
-                        .0
-                        .lock()
-                        .unwrap()
-                        .event(transition, elapsed);
-                    match gesture {
-                        Some(Gesture::Started) => {
-                            let _ = app.emit("push_started", now_ms());
-                        }
-                        Some(Gesture::Finished) => {
-                            let _ = app.emit("push_finished", now_ms());
-                        }
-                        None => {}
-                    }
-                }
-            }
-            active.lock().unwrap().remove(&path);
-        });
-    }
-
-    /// Starts a hotplug-aware evdev listener. It never EVIOCGRABs: every key
-    /// continues to reach GNOME and the focused application normally.
-    pub fn start(app: &AppHandle) -> Result<usize, String> {
-        let (ready_tx, ready_rx) = mpsc::channel();
-        let app = app.clone();
-        let caps_as_control = caps_is_control();
-        if caps_as_control {
-            println!("[input] GNOME ctrl:nocaps detected; Caps Lock is a trigger key");
-        }
-        std::thread::spawn(move || {
-            let active = Arc::new(Mutex::new(HashSet::<PathBuf>::new()));
-            let epoch = Instant::now();
-            let mut first_scan = true;
-            loop {
-                let mut found = 0usize;
-                for (path, device) in enumerate() {
-                    if !is_keyboard(&device) {
-                        continue;
-                    }
-                    found += 1;
-                    let inserted = active.lock().unwrap().insert(path.clone());
-                    if inserted {
-                        spawn_device(
-                            path,
-                            device,
-                            app.clone(),
-                            active.clone(),
-                            epoch,
-                            caps_as_control,
-                        );
-                    }
-                }
-                if first_scan {
-                    let _ = ready_tx.send(found);
-                    first_scan = false;
-                }
-                std::thread::sleep(Duration::from_secs(2));
-            }
-        });
-
-        match ready_rx.recv_timeout(Duration::from_secs(3)) {
-            Ok(0) => Err("no readable keyboard event device found".into()),
-            Ok(count) => Ok(count),
-            Err(_) => Err("keyboard device scan timed out".into()),
-        }
-    }
-
-    pub fn probe() -> Result<Vec<String>, String> {
-        let devices: Vec<String> = enumerate()
-            .filter_map(|(path, device)| {
-                is_keyboard(&device).then(|| {
-                    format!(
-                        "{} ({})",
-                        device.name().unwrap_or("keyboard"),
-                        path.display()
-                    )
-                })
-            })
-            .collect();
-        if devices.is_empty() {
-            Err("no readable keyboard event device found".into())
-        } else {
-            Ok(devices)
-        }
-    }
-}
-
-#[cfg(target_os = "linux")]
-pub use linux::{probe as probe_linux, start as start_linux};
 
 #[cfg(test)]
 mod tests {

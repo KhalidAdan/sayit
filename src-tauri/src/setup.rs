@@ -1,17 +1,20 @@
-//! Linux first-run bootstrap and reusable diagnostics. The first failure gets
-//! a focused window; after completion, failures stay in the tray unless the
-//! user explicitly opens Diagnostics.
+//! First-run bootstrap and reusable diagnostics — the OS-free half. The
+//! setup window's commands live here as thin shims over the platform
+//! backend; what the probes actually check (evdev, uinput, downloads) is
+//! the backend's business. The first failure gets a focused window; after
+//! completion, failures stay in the tray unless the user explicitly opens
+//! Diagnostics.
 
+use crate::platform::{self, Platform};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
-use tauri::{AppHandle, Emitter, Manager};
+use std::sync::{Arc, Mutex};
+use tauri::{AppHandle, Manager};
 
 #[derive(Default)]
 pub struct SetupState {
-    running: AtomicBool,
-    ready: AtomicBool,
-    hotkey_started: AtomicBool,
-    error: Mutex<Option<String>>,
+    pub(crate) running: AtomicBool,
+    pub(crate) ready: AtomicBool,
+    pub(crate) error: Mutex<Option<String>>,
 }
 
 #[derive(serde::Serialize)]
@@ -44,62 +47,15 @@ pub fn init_window(app: &AppHandle) {
     }
 }
 
-#[cfg(target_os = "linux")]
-fn start_hotkey_once(app: &AppHandle) -> Result<(), String> {
-    let state = app.state::<SetupState>();
-    if state.hotkey_started.swap(true, Ordering::SeqCst) {
-        return Ok(());
-    }
-    match crate::hotkey::start_linux(app) {
-        Ok(count) => {
-            println!("[sayit] Control gesture listening on {count} keyboard device(s)");
-            Ok(())
-        }
-        Err(e) => {
-            state.hotkey_started.store(false, Ordering::SeqCst);
-            Err(e)
-        }
-    }
-}
-
-#[cfg(target_os = "linux")]
-pub fn start_normal(app: &AppHandle) {
-    let saved = crate::settings::load(app);
-    if !saved.linux_setup_complete {
-        crate::tray::set_status(app, "setup required — open sayit");
-        show(app);
-        return;
-    }
-    if let Err(e) = start_hotkey_once(app) {
-        *app.state::<SetupState>().error.lock().unwrap() = Some(e.clone());
-        crate::tray::set_status(app, "keyboard unavailable — Diagnostics…");
-        return;
-    }
-    if !crate::assets::assets_ready() {
-        *app.state::<SetupState>().error.lock().unwrap() =
-            Some("engine or model is missing".into());
-        crate::tray::set_status(app, "engine missing — Diagnostics…");
-        return;
-    }
-    if let Err(e) = crate::sidecar::start(app) {
-        *app.state::<SetupState>().error.lock().unwrap() = Some(e.clone());
-        crate::tray::set_status(app, "engine failed — Diagnostics…");
-    }
-}
-
-#[cfg(windows)]
-pub fn start_normal(app: &AppHandle) {
-    if let Err(e) = crate::sidecar::start(app) {
-        eprintln!("[sayit] engine failed: {e}");
-        crate::tray::set_status(app, "engine failed — check logs");
-    }
-}
-
 pub fn show(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("setup") {
         let _ = window.show();
         let _ = window.set_focus();
     }
+}
+
+fn backend(app: &AppHandle) -> Arc<platform::Current> {
+    app.state::<Arc<platform::Current>>().inner().clone()
 }
 
 #[tauri::command]
@@ -117,21 +73,9 @@ pub fn setup_hide(app: AppHandle) {
 #[tauri::command]
 pub fn setup_snapshot(app: AppHandle) -> Snapshot {
     let state = app.state::<SetupState>();
-    #[cfg(target_os = "linux")]
-    let (keyboard_ok, keyboard_detail) = match crate::hotkey::probe_linux() {
-        Ok(devices) => (true, devices.join(", ")),
-        Err(e) => (false, e),
-    };
-    #[cfg(not(target_os = "linux"))]
-    let (keyboard_ok, keyboard_detail) = (true, "Windows global shortcut".into());
-
-    #[cfg(target_os = "linux")]
-    let (uinput_ok, uinput_detail) = match crate::linux_input::probe_uinput() {
-        Ok(()) => (true, "/dev/uinput is writable".into()),
-        Err(e) => (false, e),
-    };
-    #[cfg(not(target_os = "linux"))]
-    let (uinput_ok, uinput_detail) = (true, "Windows SendInput".into());
+    let platform = backend(&app);
+    let (keyboard_ok, keyboard_detail) = platform.keyboard_probe();
+    let (uinput_ok, uinput_detail) = platform.injection_probe();
 
     let microphones = crate::capture::list_inputs();
     let microphone_ok = !microphones.is_empty();
@@ -141,17 +85,11 @@ pub fn setup_snapshot(app: AppHandle) -> Snapshot {
         "no microphone found".into()
     };
 
-    #[cfg(target_os = "linux")]
-    let (engine, model) = crate::assets::paths();
-    #[cfg(not(target_os = "linux"))]
-    let (engine, model) = (
-        crate::paths::sidecar_exe().unwrap_or_default(),
-        crate::paths::model().unwrap_or_default(),
-    );
+    let (engine, model) = platform.engine_model_paths();
 
     let last_error = state.error.lock().unwrap().clone();
     Snapshot {
-        first_run: cfg!(target_os = "linux") && !crate::settings::load(&app).linux_setup_complete,
+        first_run: platform::Current::needs_setup() && !crate::settings::load(&app).setup_complete,
         running: state.running.load(Ordering::Relaxed),
         ready: state.ready.load(Ordering::Relaxed),
         keyboard_ok,
@@ -169,99 +107,19 @@ pub fn setup_snapshot(app: AppHandle) -> Snapshot {
 
 #[tauri::command]
 pub async fn setup_begin(app: AppHandle) -> Result<(), String> {
-    #[cfg(not(target_os = "linux"))]
-    return Err("setup bootstrap is only needed on Linux".into());
-
-    #[cfg(target_os = "linux")]
-    {
-        let state = app.state::<SetupState>();
-        if state.running.swap(true, Ordering::SeqCst) {
-            return Ok(());
-        }
-        state.ready.store(false, Ordering::Relaxed);
-        *state.error.lock().unwrap() = None;
-
-        let result: Result<(), String> = async {
-            crate::hotkey::probe_linux()?;
-            crate::linux_input::probe_uinput()?;
-            if crate::capture::list_inputs().is_empty() {
-                return Err("no microphone found".into());
-            }
-            crate::assets::ensure(&app).await?;
-            crate::sidecar::start(&app)?;
-
-            for _ in 0..240 {
-                if app
-                    .state::<crate::sidecar::Ready>()
-                    .0
-                    .load(Ordering::Relaxed)
-                {
-                    return Ok(());
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-            }
-            Err("engine warmup timed out".into())
-        }
-        .await;
-
-        state.running.store(false, Ordering::SeqCst);
-        match result {
-            Ok(()) => {
-                state.ready.store(true, Ordering::Relaxed);
-                let _ = app.emit("setup_ready", ());
-                Ok(())
-            }
-            Err(e) => {
-                *state.error.lock().unwrap() = Some(e.clone());
-                let _ = app.emit("setup_failed", e.clone());
-                Err(e)
-            }
-        }
-    }
+    let platform = backend(&app);
+    platform.setup_begin(app).await
 }
 
 #[tauri::command]
 pub fn setup_finish(app: AppHandle) -> Result<(), String> {
-    #[cfg(target_os = "linux")]
-    {
-        let state = app.state::<SetupState>();
-        if !state.ready.load(Ordering::Relaxed)
-            && !(crate::assets::assets_ready()
-                && app
-                    .state::<crate::sidecar::Ready>()
-                    .0
-                    .load(Ordering::Relaxed))
-        {
-            return Err("setup is not ready yet".into());
-        }
-        start_hotkey_once(&app)?;
-        let mut saved = crate::settings::load(&app);
-        saved.linux_setup_complete = true;
-        crate::settings::save(&app, &saved);
-        crate::tray::set_status(&app, "ready — double-tap left Ctrl or remapped Caps");
-        if let Some(window) = app.get_webview_window("setup") {
-            let _ = window.hide();
-        }
-        let _ = app.emit("setup_finished", ());
-        return Ok(());
-    }
-    #[cfg(not(target_os = "linux"))]
-    Ok(())
+    backend(&app).setup_finish(&app)
 }
 
-#[cfg(target_os = "linux")]
 #[tauri::command]
-pub async fn setup_test_injection(
-    input: tauri::State<'_, crate::linux_input::LinuxInput>,
-) -> Result<crate::inject::InjectTiming, String> {
-    let input = input.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || input.inject("sayit can type here".to_owned()))
+pub async fn setup_test_injection(app: AppHandle) -> Result<crate::inject::InjectTiming, String> {
+    let platform = backend(&app);
+    tauri::async_runtime::spawn_blocking(move || platform.setup_test_injection())
         .await
         .map_err(|e| e.to_string())?
-}
-
-#[cfg(not(target_os = "linux"))]
-#[tauri::command]
-pub async fn setup_test_injection() -> Result<crate::inject::InjectTiming, String> {
-    Err("Linux injection test unavailable".into())
 }

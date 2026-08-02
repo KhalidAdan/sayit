@@ -5,24 +5,21 @@
 //! machine and decides what happens next. Rust touches the OS, TS makes
 //! decisions, the sidecar thinks.
 
-mod assets;
 mod capture;
 mod dictionary;
 mod hotkey;
 mod inject;
-#[cfg(target_os = "linux")]
-mod linux_input;
 mod paths;
+pub mod platform;
 mod settings;
 mod setup;
 mod sidecar;
 mod sounds;
 mod transcribe;
-mod tray;
-mod update;
 
+use platform::Platform;
 use std::io::Write;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use tauri::Manager;
 
 /// The tray's microphone pick. None = system default.
@@ -107,22 +104,13 @@ async fn stop_and_transcribe(
     })
 }
 
-#[cfg(windows)]
-#[tauri::command]
-async fn inject_text(text: String) -> Result<inject::InjectTiming, String> {
-    tauri::async_runtime::spawn_blocking(move || inject::inject(&text))
-        .await
-        .map_err(|e| e.to_string())?
-}
-
-#[cfg(target_os = "linux")]
 #[tauri::command]
 async fn inject_text(
     text: String,
-    input: tauri::State<'_, linux_input::LinuxInput>,
+    platform: tauri::State<'_, Arc<platform::Current>>,
 ) -> Result<inject::InjectTiming, String> {
-    let input = input.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || inject::inject(&text, &input))
+    let platform = platform.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || platform.inject(&text))
         .await
         .map_err(|e| e.to_string())?
 }
@@ -135,7 +123,7 @@ fn play_sound(slot: String, sounds: tauri::State<sounds::Sounds>) {
 
 #[tauri::command]
 fn tray_status(app: tauri::AppHandle, text: String) {
-    tray::set_status(&app, &text);
+    app.state::<Arc<platform::Current>>().set_tray_status(&text);
 }
 
 #[tauri::command]
@@ -148,25 +136,9 @@ fn trigger_mode(mode: hotkey::TriggerMode, control: tauri::State<hotkey::HotkeyC
     hotkey::set_mode(&control, mode);
 }
 
-#[derive(serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-struct PlatformInfo {
-    os: &'static str,
-    trigger_hint: &'static str,
-}
-
 #[tauri::command]
-fn platform_info() -> PlatformInfo {
-    #[cfg(windows)]
-    return PlatformInfo {
-        os: "windows",
-        trigger_hint: "hold F9 to dictate",
-    };
-    #[cfg(target_os = "linux")]
-    return PlatformInfo {
-        os: "linux",
-        trigger_hint: "double-tap left Ctrl or remapped Caps to dictate",
-    };
+fn platform_info() -> platform::PlatformInfo {
+    platform::Current::info()
 }
 
 /// The coordinator pulls this at boot so its sleep timer honors the
@@ -331,47 +303,31 @@ fn waveform_hide(app: tauri::AppHandle) {
     }
 }
 
-#[cfg(target_os = "linux")]
-pub fn update_preflight() -> Result<(), String> {
-    update::preflight()
-}
-
-#[cfg(not(target_os = "linux"))]
-pub fn update_preflight() -> Result<(), String> {
-    Ok(())
-}
-
-/// One sayit per machine. Two instances means two engines fighting over
-/// one hotkey, one port, and — the expensive part — double the VRAM.
-/// A named mutex is the classic Windows answer; the handle is deliberately
-/// leaked so the claim lasts exactly as long as the process. The
-/// single-instance plugin below is the cross-platform half — the mutex
-/// wins the race before Tauri even builds.
-#[cfg(windows)]
-fn already_running() -> bool {
-    use windows_sys::Win32::Foundation::{ERROR_ALREADY_EXISTS, GetLastError};
-    use windows_sys::Win32::System::Threading::CreateMutexW;
-    let name: Vec<u16> = "Local\\sayit-single-instance\0".encode_utf16().collect();
-    unsafe {
-        let handle = CreateMutexW(std::ptr::null(), 0, name.as_ptr());
-        !handle.is_null() && GetLastError() == ERROR_ALREADY_EXISTS
-    }
-}
-
 pub fn run() {
-    #[cfg(windows)]
-    if already_running() {
+    // First claim wins (Windows: named mutex, before Tauri even builds).
+    // The single-instance plugin below is the cross-platform half.
+    if !platform::Current::acquire_single_instance() {
         eprintln!("[sayit] another sayit is already running — not starting a second engine");
         return;
     }
+    // Construct the backend before the builder: any long-lived platform
+    // workers (Linux's uinput + clipboard thread) exist before the webview.
+    let platform = match platform::Current::init() {
+        Ok(p) => Arc::new(p),
+        Err(e) => {
+            eprintln!("[sayit] platform init failed: {e}");
+            return;
+        }
+    };
     let builder = tauri::Builder::default()
         // Must be the first plugin: a second process must never race the
         // sidecar, updater, clipboard, or event-device listener.
         .plugin(tauri_plugin_single_instance::init(|app, _, _| {
-            if !settings::load(app).linux_setup_complete && cfg!(target_os = "linux") {
+            if platform::Current::needs_setup() && !settings::load(app).setup_complete {
                 setup::show(app);
             } else {
-                tray::set_status(app, "already running");
+                app.state::<Arc<platform::Current>>()
+                    .set_tray_status("already running");
             }
         }))
         .plugin(tauri_plugin_autostart::init(
@@ -383,22 +339,15 @@ pub fn run() {
         .manage(sidecar::Sidecar(Mutex::default()))
         .manage(sidecar::Ready::default())
         .manage(sounds::start())
-        .manage(tray::Tray::default())
         .manage(MicChoice(Mutex::new(None)))
         .manage(dictionary::Rules::default())
         .manage(hotkey::HotkeyControl::default())
-        .manage(setup::SetupState::default());
+        .manage(setup::SetupState::default())
+        .manage(platform);
 
-    #[cfg(windows)]
-    let builder = builder.plugin(
-        tauri_plugin_global_shortcut::Builder::new()
-            .with_shortcuts([hotkey::PUSH_TO_TALK])
-            .expect("push-to-talk key is not a valid shortcut")
-            .with_handler(|app, _shortcut, event| hotkey::on_shortcut(app, event.state()))
-            .build(),
-    );
-    #[cfg(target_os = "linux")]
-    let builder = builder.manage(linux_input::LinuxInput::start());
+    // Builder-time platform hook: Windows registers the global-shortcut
+    // plugin here; platforms whose trigger starts later pass through.
+    let builder = platform::Current::attach(builder);
 
     builder
         .setup(|app| {
@@ -406,20 +355,19 @@ pub fn run() {
             *app.state::<MicChoice>().0.lock().unwrap() = saved.microphone.clone();
             dictionary::init(app.handle(), &saved);
             setup::init_window(app.handle());
-            tray::build(app.handle(), &saved)
+            let platform = app.state::<Arc<platform::Current>>();
+            platform
+                .build_tray(app.handle(), &saved)
                 .map_err(|e| std::io::Error::other(format!("tray failed: {e}")))?;
-            // A previous sayit that died uncleanly may have left its engine
-            // behind, still holding VRAM and port 8642. Clear it before
-            // spawning ours, or we'd run two (docs/sidecar.md).
-            #[cfg(windows)]
-            sidecar::reap_stale();
-            setup::start_normal(app.handle());
-            tauri::async_runtime::spawn(update::check_and_install(app.handle().clone()));
-            #[cfg(windows)]
-            println!("[sayit] push-to-talk on {}", hotkey::PUSH_TO_TALK);
-            #[cfg(target_os = "linux")]
-            println!("[sayit] trigger: double-tap left Ctrl/remapped Caps; one tap stops");
-            update::mark_healthy();
+            // The boot decision (stale-engine reap, setup gate, sidecar
+            // start) belongs to the backend.
+            platform.start_normal(app.handle());
+            platform.start_update_check(app.handle());
+            println!(
+                "[sayit] trigger: {}",
+                platform::Current::info().trigger_hint
+            );
+            platform::Current::mark_update_healthy();
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

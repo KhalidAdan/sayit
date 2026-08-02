@@ -1,8 +1,8 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capability for the main (hidden) window, waveform overlay, and dictionary editor",
-  "windows": ["main", "waveform", "dictionary"],
+  "description": "Capability for the main (hidden) window, waveform overlay, dictionary editor, and setup window",
+  "windows": ["main", "waveform", "dictionary", "setup"],
   "permissions": [
     "core:default"
   ]

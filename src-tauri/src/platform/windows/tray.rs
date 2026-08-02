@@ -6,20 +6,19 @@
 //! the state machine) through the `tray_status` command. Rust renders,
 //! TS decides — same seam as everything else.
 
-use std::sync::Mutex;
+use super::WindowsBackend;
 use tauri::menu::{CheckMenuItem, IsMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
-use tauri::tray::{TrayIcon, TrayIconBuilder};
+use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Emitter, Manager, Wry};
 use tauri_plugin_autostart::ManagerExt;
 
 use crate::{settings, MicChoice};
 
-#[derive(Default)]
-pub struct Tray {
-    handles: Mutex<Option<(TrayIcon<Wry>, MenuItem<Wry>)>>,
-}
-
-pub fn build(app: &AppHandle, saved: &settings::Settings) -> tauri::Result<()> {
+pub(super) fn build(
+    backend: &WindowsBackend,
+    app: &AppHandle,
+    saved: &settings::Settings,
+) -> tauri::Result<()> {
     let status = MenuItem::with_id(app, "status", "warming up…", false, None::<&str>)?;
 
     // Microphone picker: system default plus every input device present at
@@ -163,17 +162,6 @@ pub fn build(app: &AppHandle, saved: &settings::Settings) -> tauri::Result<()> {
         })
         .build(app)?;
 
-    app.state::<Tray>()
-        .handles
-        .lock()
-        .unwrap()
-        .replace((tray, status));
+    backend.tray.lock().unwrap().replace((tray, status));
     Ok(())
-}
-
-pub fn set_status(app: &AppHandle, text: &str) {
-    if let Some((tray, status)) = app.state::<Tray>().handles.lock().unwrap().as_ref() {
-        let _ = status.set_text(text);
-        let _ = tray.set_tooltip(Some(format!("sayit — {text}")));
-    }
 }
