@@ -1,28 +1,16 @@
 //! GNOME/KDE StatusNotifierItem tray implemented directly over D-Bus. This
 //! avoids requiring libayatana-appindicator on the immutable host.
 
-use ksni::blocking::{Handle, TrayMethods};
-use std::sync::Mutex;
+use super::LinuxBackend;
+use ksni::blocking::TrayMethods;
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_autostart::ManagerExt;
 
 use crate::settings;
 
-pub struct Tray {
-    handle: Mutex<Option<Handle<SayitTray>>>,
-}
-
-impl Default for Tray {
-    fn default() -> Self {
-        Self {
-            handle: Mutex::new(None),
-        }
-    }
-}
-
-struct SayitTray {
+pub(super) struct SayitTray {
     app: AppHandle,
-    status: String,
+    pub(super) status: String,
     microphone: Option<String>,
     microphones: Vec<Option<String>>,
     keep_awake: bool,
@@ -160,7 +148,11 @@ impl ksni::Tray for SayitTray {
     }
 }
 
-pub fn build(app: &AppHandle, saved: &settings::Settings) -> Result<(), String> {
+pub(super) fn build(
+    backend: &LinuxBackend,
+    app: &AppHandle,
+    saved: &settings::Settings,
+) -> Result<(), String> {
     let mut microphones = vec![None];
     microphones.extend(crate::capture::list_inputs().into_iter().map(Some));
     let tray = SayitTray {
@@ -172,13 +164,6 @@ pub fn build(app: &AppHandle, saved: &settings::Settings) -> Result<(), String> 
         autostart: app.autolaunch().is_enabled().unwrap_or(false),
     };
     let handle = tray.spawn().map_err(|e| e.to_string())?;
-    app.state::<Tray>().handle.lock().unwrap().replace(handle);
+    backend.tray.lock().unwrap().replace(handle);
     Ok(())
-}
-
-pub fn set_status(app: &AppHandle, text: &str) {
-    if let Some(handle) = app.state::<Tray>().handle.lock().unwrap().as_ref() {
-        let text = text.to_owned();
-        let _ = handle.update(move |tray| tray.status = text);
-    }
 }

@@ -1,7 +1,10 @@
 //! Runtime companion discovery. Environment overrides win, then the managed
 //! per-user data directory, then installed/repository layouts around the
-//! executable. No companion path is compiled into the binary.
+//! executable. No companion path is compiled into the binary; the per-OS
+//! facts (data-dir root, exe name, candidate layouts) come from the
+//! platform backend as data.
 
+use crate::platform::Platform;
 use std::path::{Path, PathBuf};
 
 fn find_from(start: &Path, candidates: &[PathBuf]) -> Option<PathBuf> {
@@ -22,23 +25,7 @@ pub fn managed_dir() -> PathBuf {
     if let Ok(path) = std::env::var("SAYIT_DATA_DIR") {
         return PathBuf::from(path);
     }
-    #[cfg(target_os = "linux")]
-    {
-        let root = std::env::var_os("XDG_DATA_HOME")
-            .map(PathBuf::from)
-            .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))
-            .unwrap_or_else(std::env::temp_dir);
-        return root.join("dev.khalid.sayit");
-    }
-    #[cfg(windows)]
-    {
-        let root = std::env::var_os("LOCALAPPDATA")
-            .map(PathBuf::from)
-            .unwrap_or_else(std::env::temp_dir);
-        return root.join("sayit");
-    }
-    #[allow(unreachable_code)]
-    std::env::temp_dir().join("sayit")
+    crate::platform::Current::data_dir()
 }
 
 fn find(env_key: &str, managed: PathBuf, candidates: &[PathBuf]) -> Option<PathBuf> {
@@ -53,22 +40,11 @@ fn find(env_key: &str, managed: PathBuf, candidates: &[PathBuf]) -> Option<PathB
 }
 
 pub fn sidecar_exe() -> Result<PathBuf, String> {
-    #[cfg(windows)]
-    let candidates = vec![
-        PathBuf::from("sidecar/whisper-server.exe"),
-        PathBuf::from("sidecar/whisper-cublas/Release/whisper-server.exe"),
-    ];
-    #[cfg(target_os = "linux")]
-    let candidates = vec![
-        PathBuf::from("sidecar/whisper-server"),
-        PathBuf::from("sidecar/whisper-cuda/whisper-server"),
-        PathBuf::from("sidecar/whisper-bin-x64/whisper-server"),
-    ];
-
-    #[cfg(windows)]
-    let name = "whisper-server.exe";
-    #[cfg(target_os = "linux")]
-    let name = "whisper-server";
+    let candidates: Vec<PathBuf> = crate::platform::Current::sidecar_candidates()
+        .iter()
+        .map(PathBuf::from)
+        .collect();
+    let name = crate::platform::Current::sidecar_exe_name();
 
     find(
         "SAYIT_SIDECAR",
