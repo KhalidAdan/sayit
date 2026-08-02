@@ -1,6 +1,6 @@
 [package]
 name = "sayit"
-version = "0.3.1"
+version = "0.4.0"
 license = "MIT"
 description = "The key that listens. Local dictation for Windows and Linux."
 authors = ["Khalid"]
