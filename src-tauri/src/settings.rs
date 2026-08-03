@@ -313,11 +313,6 @@ mod tests {
         std::fs::write(&p, "\u{feff}{\"idle_minutes\": 9}").unwrap();
         assert_eq!(load_from(&p).idle_minutes, 9);
     }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
 
     #[test]
     fn completion_voice_is_opt_in_for_existing_settings() {
