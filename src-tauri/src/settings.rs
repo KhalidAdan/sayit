@@ -74,13 +74,18 @@ pub fn load(app: &AppHandle) -> Settings {
         .unwrap_or_default()
 }
 
-pub fn save(app: &AppHandle, settings: &Settings) {
-    let Some(p) = path(app) else { return };
+fn try_save(app: &AppHandle, settings: &Settings) -> Result<(), String> {
+    let p = path(app).ok_or("settings directory unavailable")?;
     if let Some(dir) = p.parent() {
-        let _ = std::fs::create_dir_all(dir);
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
-    if let Ok(json) = serde_json::to_string_pretty(settings) {
-        let _ = std::fs::write(p, json);
+    let json = serde_json::to_string_pretty(settings).map_err(|e| e.to_string())?;
+    std::fs::write(p, json).map_err(|e| e.to_string())
+}
+
+pub fn save(app: &AppHandle, settings: &Settings) {
+    if let Err(e) = try_save(app, settings) {
+        eprintln!("[sayit] settings save failed: {e}");
     }
 }
 

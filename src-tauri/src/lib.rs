@@ -16,6 +16,7 @@ mod setup;
 mod sidecar;
 mod sounds;
 mod transcribe;
+mod waveform;
 
 use platform::Platform;
 use std::io::Write;
@@ -30,7 +31,11 @@ fn start_capture(
     app: tauri::AppHandle,
     state: tauri::State<capture::CaptureState>,
     mic: tauri::State<MicChoice>,
+    sounds: tauri::State<sounds::Sounds>,
 ) -> Result<(), String> {
+    // A completion voice from the previous take must be silent before the
+    // microphone opens, or feedback becomes the next transcript.
+    sounds.stop();
     let preferred = mic.0.lock().unwrap().clone();
     capture::start(&state, &app, preferred)
 }
@@ -116,13 +121,12 @@ async fn inject_text(
 }
 
 #[tauri::command]
-fn play_sound(app: tauri::AppHandle, slot: String, sounds: tauri::State<sounds::Sounds>) {
-    if slot == "accept" && !settings::load(&app).completion_voice {
+fn play_sound(slot: String, sounds: tauri::State<sounds::Sounds>) {
+    if sounds.play(&slot) {
+        println!("[sayit] sound: {slot}");
+    } else if slot == "accept" {
         println!("[sayit] sound: accept (voice disabled)");
-        return;
     }
-    println!("[sayit] sound: {slot}");
-    sounds.play(&slot);
 }
 
 #[tauri::command]
@@ -283,56 +287,13 @@ fn log_gap(app: tauri::AppHandle, row: GapRow) {
     }
 }
 
-/// Place the native waveform host bottom-center. WebKitGTK does not report
-/// its enforced ~200px minimum until the hidden window is first realized, so
-/// callers must reposition whenever GTK reports the real size.
-fn position_waveform(w: &tauri::WebviewWindow, size: tauri::PhysicalSize<u32>) {
-    if let Ok(Some(monitor)) = w.primary_monitor() {
-        let screen = monitor.size();
-        let x = screen.width.saturating_sub(size.width) / 2;
-        let y = screen.height.saturating_sub(size.height + 96);
-        let _ = w.set_position(tauri::PhysicalPosition::new(x as i32, y as i32));
-    }
-}
-
-fn init_waveform_window(app: &tauri::AppHandle) {
-    if let Some(w) = app.get_webview_window("waveform") {
-        let copy = w.clone();
-        let last_size = Mutex::new(w.outer_size().ok());
-        w.on_window_event(move |event| {
-            if let tauri::WindowEvent::Resized(size) = event {
-                // GTK emits one configure event for both moves and resizes,
-                // and Tao reports every configure as Resized. Deduplicate the
-                // size or set_position would feed back into this listener.
-                let mut previous = last_size.lock().unwrap();
-                if previous.as_ref() == Some(size) {
-                    return;
-                }
-                *previous = Some(*size);
-                drop(previous);
-                position_waveform(&copy, *size);
-            }
-        });
-    }
-}
-
 /// The waveform window appears bottom-center while recording. It is
 /// focusable:false in config — it must NEVER take focus, or the paste
-/// lands in the wrong place. Show/hide live on the Rust side so the
-/// webview needs no window-management capabilities.
+/// lands in the wrong place. Native realization and placement live behind
+/// Platform because the hosts disagree about when their real size exists.
 #[tauri::command]
 fn waveform_show(app: tauri::AppHandle) {
-    if let Some(w) = app.get_webview_window("waveform") {
-        if let Ok(size) = w.outer_size() {
-            position_waveform(&w, size);
-        }
-        let _ = w.show();
-        // `show` realizes the GTK window. Re-read immediately when possible;
-        // the resize listener above is the backstop for asynchronous sizing.
-        if let Ok(size) = w.outer_size() {
-            position_waveform(&w, size);
-        }
-    }
+    app.state::<Arc<platform::Current>>().show_waveform(&app);
 }
 
 #[tauri::command]
@@ -392,10 +353,12 @@ pub fn run() {
         .setup(|app| {
             let saved = settings::load(app.handle());
             *app.state::<MicChoice>().0.lock().unwrap() = saved.microphone.clone();
+            app.state::<sounds::Sounds>()
+                .set_completion_voice(saved.completion_voice);
             dictionary::init(app.handle(), &saved);
             setup::init_window(app.handle());
-            init_waveform_window(app.handle());
             let platform = app.state::<Arc<platform::Current>>();
+            platform.init_waveform(app.handle());
             platform
                 .build_tray(app.handle(), &saved)
                 .map_err(|e| std::io::Error::other(format!("tray failed: {e}")))?;

@@ -90,9 +90,11 @@ The things only Khalid's ears and hands can judge:
   naturally (backtracking and "um"s included), release. Words correct,
   gap unnoticeable, nothing extra typed.
 - **Punctuation & capitalization** look like writing, not transcript soup.
-- **Sound audition:** each soundpack slot audible at normal volume, press
-  sound doesn't bleed into the transcription (dictate with sounds on, check
-  the text for phantom words).
+- **Sound audition:** each soundpack slot audible at normal volume; start a
+  second take while completion speech is still playing and verify the voice
+  stops before capture (no phantom words in the transcript).
+- **Waveform cold show:** restart sayit, then compare the first and next two
+  takes. Every pill sits 96px above the screen bottom and animates smoothly.
 - **Tray truth:** tray status tracks reality through a full dictation.
 - **The trust question**, asked honestly: "did I hesitate before using it
   for something that mattered?" If yes, find out why — that's the next bug.
@@ -116,6 +118,9 @@ Team in:* — because memorable bugs teach lessons that stick.
 | **The Unplugging** | USB mic replug hung a WASAPI stream; unbounded thread join wedged the coordinator forever ("app does not work") | never wait unboundedly at a seam: handshake with timeout on stream start, bounded ack on teardown, Effect.timeout as the coordinator's seatbelt | design (capture.rs handshakes, main.ts timeout) + Layer 3: replug the mic mid-session, verify next take works |
 | **The Deadlock Hunt** | Second press after any completed take hung silently: the sleep-timer fiber was forked inside `ensuring()` (a finalizer = uninterruptible region), inherited uninterruptibility, and `Fiber.interrupt` awaited the full 10-minute sleep | fibers forked in finalizers inherit uninterruptible — mark them `Effect.interruptible` AND cancel with `Fiber.interruptFork` (never await a fiber's death on the hot path). Diagnosed by layered probes: hotkey event log → heartbeat → callback probe | design (main.ts) + Layer 2: smoke runs THREE consecutive takes with the engine ready — single-take smoke let this hide for a day |
 | **The Tap That Kept Listening** | A sub-100ms tap delivered `push_finished` while `start_capture` was still in flight; the `!== "recording"` guard dropped the release and the mic recorded for 77s until the next tap — which then pasted the entire ambient transcript | between two async stages, an event that arrives "too early" is state, not noise: park it and replay it when the stage completes (`pressInFlightRef` / `releasedDuringStartRef`) | design (main.ts) + Layer 2: smoke adds a quick-tap (~30ms hold) and asserts capture stops without a second press |
+| **The Ground-Floor Debut** | The first waveform after process start sat against the screen bottom; later takes landed correctly | a hidden GTK window reports the requested size until WebKit realizes its larger host — place again when the native size becomes real | Layer 0 (`waveform::bottom_center`) + Layer 3 cold-show check |
+| **The One-Frame March** | Repositioning on every GTK `Resized` event fixed the first take but reduced the waveform to ~1 FPS | Tao reports every GTK configure event as both move and resize; position changes must deduplicate the reported size or create a feedback loop | Layer 3 cold-show check; Linux `Platform::init_waveform` size guard |
+| **The Orc in the Microphone** | A long completion voice could still be playing when the next take opened the mic | output feedback must stop and acknowledge before capture starts, not when the later press sound plays | Layer 3 sound audition; `Sounds::stop` precedes `capture::start` |
 
 ## What is deliberately not tested
 
