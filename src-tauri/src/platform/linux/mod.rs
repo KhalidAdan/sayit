@@ -104,6 +104,33 @@ impl Platform for LinuxBackend {
         }
     }
 
+    fn init_waveform(&self, app: &AppHandle) {
+        if let Some(window) = app.get_webview_window("waveform") {
+            let copy = window.clone();
+            let sizes = crate::waveform::SizeTracker::new(window.outer_size().ok());
+            window.on_window_event(move |event| {
+                if let tauri::WindowEvent::Resized(size) = event {
+                    // GTK emits one configure event for both moves and resizes,
+                    // and Tao reports every configure as Resized. Moving from
+                    // this callback without deduplication feeds back forever.
+                    if sizes.changed(*size) {
+                        crate::waveform::position(&copy, *size);
+                    }
+                }
+            });
+        }
+    }
+
+    fn show_waveform(&self, app: &AppHandle) {
+        if let Some(window) = app.get_webview_window("waveform") {
+            crate::waveform::position_reported_size(&window);
+            let _ = window.show();
+            // Showing realizes the GTK window. Re-read immediately when
+            // possible; the resize listener is the asynchronous backstop.
+            crate::waveform::position_reported_size(&window);
+        }
+    }
+
     fn inject(&self, text: &str) -> Result<InjectTiming, String> {
         self.input.inject(text.to_owned())
     }
