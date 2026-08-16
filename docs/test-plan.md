@@ -25,6 +25,7 @@ Pure functions, no devices, milliseconds to run. Implemented now:
 | area | cases |
 |---|---|
 | `capture::resample` | same-rate passthrough; empty input; exact 3:1 (48k→16k) sample alignment; 44.1k→16k length; midpoint interpolation |
+| `capture::complete_start` | failed microphone readiness stops both the native stream and waveform monitor |
 | `transcribe::strip_markers` | `[BLANK_AUDIO]` collapses to empty (regression, see ledger); markers dropped while speech survives; plain text untouched; unbalanced brackets can't eat the sentence |
 | `transcribe::wav_bytes` | RIFF/WAVE header; exact byte size; out-of-range samples clamp instead of overflowing |
 
@@ -95,6 +96,8 @@ The things only Khalid's ears and hands can judge:
   stops before capture (no phantom words in the transcript).
 - **Waveform cold show:** restart sayit, then compare the first and next two
   takes. Every pill sits 96px above the screen bottom and animates smoothly.
+  If the microphone refuses before a required replug, retry twice, reconnect
+  it, and verify the recovered waveform still runs at its normal speed.
 - **Tray truth:** tray status tracks reality through a full dictation.
 - **The trust question**, asked honestly: "did I hesitate before using it
   for something that mattered?" If yes, find out why — that's the next bug.
@@ -121,6 +124,7 @@ Team in:* — because memorable bugs teach lessons that stick.
 | **The Ground-Floor Debut** | The first waveform after process start sat against the screen bottom; later takes landed correctly | a hidden GTK window reports the requested size until WebKit realizes its larger host — place again when the native size becomes real | Layer 0 (`waveform::bottom_center`) + Layer 3 cold-show check |
 | **The One-Frame March** | Repositioning on every GTK `Resized` event fixed the first take but reduced the waveform to ~1 FPS | Tao reports every GTK configure event as both move and resize; position changes must deduplicate the reported size or create a feedback loop | Layer 3 cold-show check; Linux `Platform::init_waveform` size guard |
 | **The Orc in the Microphone** | A long completion voice could still be playing when the next take opened the mic | output feedback must stop and acknowledge before capture starts, not when the later press sound plays | Layer 3 sound audition; `Sounds::stop` precedes `capture::start` |
+| **The Packet Storm** | Each refused start on a reboot-wedged USB mic abandoned a 20Hz waveform monitor; retries stacked empty bars until the pill raced and its hidden webview flooded | a bounded startup failure must stop every worker it launched, not only return the error | Layer 0 (`capture::complete_start`) + Layer 3 refused-start recovery check |
 
 ## What is deliberately not tested
 

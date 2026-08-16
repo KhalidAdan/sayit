@@ -33,6 +33,21 @@ struct Session {
     alive: Arc<AtomicBool>,
 }
 
+/// A failed native start owns every worker it already launched. In particular,
+/// the waveform monitor must not survive and keep emitting empty bars.
+fn complete_start(
+    ready: Result<(), String>,
+    alive: &AtomicBool,
+    stop: &Sender<()>,
+) -> Result<(), String> {
+    if let Err(error) = ready {
+        alive.store(false, Ordering::Relaxed);
+        let _ = stop.send(());
+        return Err(error);
+    }
+    Ok(())
+}
+
 /// Input device names, for the tray's microphone picker.
 pub fn list_inputs() -> Vec<String> {
     cpal::default_host()
@@ -92,6 +107,12 @@ pub fn start(
         std::thread::spawn(move || {
             while alive.load(Ordering::Relaxed) {
                 std::thread::sleep(std::time::Duration::from_millis(50));
+                // A failed startup or completed take may have stopped the
+                // session while this monitor slept. Notice that before the
+                // next ordinary emission.
+                if !alive.load(Ordering::Relaxed) {
+                    break;
+                }
                 let peak = f32::from_bits(level.swap(0, Ordering::Relaxed));
                 let _ = app.emit("mic_level", peak);
             }
@@ -157,7 +178,7 @@ pub fn start(
                 )
             }
             other => {
-                eprintln!("[capture] unsupported sample format: {other}");
+                let _ = ready_tx.send(Err(format!("unsupported sample format: {other}")));
                 return;
             }
         };
@@ -183,11 +204,14 @@ pub fn start(
 
     // If the stream isn't live within 3s, the take is refused loudly now
     // rather than recording silence into a hung device.
-    match ready_rx.recv_timeout(std::time::Duration::from_secs(3)) {
-        Ok(Ok(())) => {}
-        Ok(Err(e)) => return Err(e),
-        Err(_) => return Err("microphone did not start (device hung after replug?)".into()),
-    }
+    let ready = match ready_rx.recv_timeout(std::time::Duration::from_secs(3)) {
+        Ok(result) => result,
+        Err(_) => Err("microphone did not start (device hung after replug?)".into()),
+    };
+    // The level monitor starts before the native stream so it cannot miss the
+    // first callback. Failed starts must stop it as well as the native stream;
+    // otherwise every refusal adds another permanent 20Hz feed of zero bars.
+    complete_start(ready, &alive, &stop)?;
 
     capture.session = Some(Session {
         stop,
@@ -275,6 +299,30 @@ pub(crate) fn resample(input: &[f32], from: u32, to: u32) -> Vec<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn failed_start_stops_every_worker_it_launched() {
+        let alive = AtomicBool::new(true);
+        let (stop, stopped) = channel();
+
+        let error = complete_start(Err("mic never became ready".into()), &alive, &stop)
+            .expect_err("failed readiness must stay failed");
+
+        assert_eq!(error, "mic never became ready");
+        assert!(!alive.load(Ordering::Relaxed));
+        assert!(stopped.try_recv().is_ok());
+    }
+
+    #[test]
+    fn ready_start_keeps_its_workers_alive() {
+        let alive = AtomicBool::new(true);
+        let (stop, stopped) = channel();
+
+        complete_start(Ok(()), &alive, &stop).expect("ready stream must stay ready");
+
+        assert!(alive.load(Ordering::Relaxed));
+        assert!(stopped.try_recv().is_err());
+    }
 
     #[test]
     fn same_rate_is_passthrough() {
