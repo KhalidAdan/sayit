@@ -15,7 +15,7 @@ use crate::settings::Settings;
 use std::future::Future;
 use std::path::PathBuf;
 use std::process::{Child, Command};
-use tauri::{AppHandle, Wry};
+use tauri::{AppHandle, Manager, Wry};
 
 #[cfg(windows)]
 mod windows;
@@ -102,6 +102,23 @@ pub trait Platform: Send + Sync + Sized + 'static {
     fn start_trigger(&self, app: &AppHandle) -> Result<(), String> {
         let _ = app;
         Ok(())
+    }
+
+    // ───────── waveform host ─────────
+
+    /// Attach any native-window lifecycle handling needed by the waveform.
+    /// A normally sized host needs none; Linux overrides this because GTK
+    /// learns WebKit's enforced host size only when the window is realized.
+    fn init_waveform(&self, app: &AppHandle) {
+        let _ = app;
+    }
+
+    /// Place and reveal the waveform. The default host reports its size while
+    /// hidden; Linux overrides this to re-place after native realization.
+    fn show_waveform(&self, app: &AppHandle) {
+        if let Some(window) = app.get_webview_window("waveform") {
+            crate::waveform::show(&window);
+        }
     }
 
     // ───────── injection ─────────

@@ -14,9 +14,14 @@
         background: transparent;
         overflow: hidden;
       }
+      /* The native host may be taller than its requested size. Keep the
+         visible surface at the host's bottom and cap it at the designed 64px;
+         a normal 64px host remains completely filled. */
       #pill {
         position: fixed;
-        inset: 0;
+        inset: auto 0 0;
+        height: min(64px, 100%);
+        overflow: hidden;
         display: flex;
         align-items: center;
         justify-content: center;

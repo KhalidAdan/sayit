@@ -12,10 +12,13 @@ the filename is the hook.
 Rules:
 
 - WAV, OGG, or MP3. First match in that order wins.
-- A missing file is a silent slot. Silence is a legitimate choice — `accept`
-  is deliberately empty, because the text appearing *is* the confirmation.
-- Keep them short (under ~300ms) and quiet. `press` plays while the mic is
-  already recording; a long or loud sound can bleed into your take.
+- A missing file is a silent slot. Silence is a legitimate choice.
+- Completion voice is disabled by default even when `accept` exists. Enable
+  **Completion voice** from the tray to opt in. Without an `accept` file the
+  control is disabled instead of pretending it can play.
+- Keep `press` and `refuse` short (under ~300ms) and quiet. `press` plays while
+  the mic is already recording; a long or loud sound can bleed into your take.
+  Completion playback is stopped before the next microphone opens.
 - Files load once at app start — after swapping sounds, restart sayit.
 
 Current pack: `refuse.ogg` is "woosh 01" from the GRAND ADVENTURE asset pack

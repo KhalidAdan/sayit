@@ -14,6 +14,8 @@ pub(super) struct SayitTray {
     microphone: Option<String>,
     microphones: Vec<Option<String>>,
     keep_awake: bool,
+    completion_voice: bool,
+    completion_voice_available: bool,
     autostart: bool,
 }
 
@@ -90,6 +92,21 @@ impl ksni::Tray for SayitTray {
             }
             .into(),
             CheckmarkItem {
+                label: if self.completion_voice_available {
+                    "Completion voice".into()
+                } else {
+                    "Completion voice (no sound installed)".into()
+                },
+                enabled: self.completion_voice_available,
+                checked: self.completion_voice,
+                activate: Box::new(|this: &mut Self| {
+                    this.completion_voice =
+                        crate::sounds::set_completion_voice(&this.app, !this.completion_voice);
+                }),
+                ..Default::default()
+            }
+            .into(),
+            CheckmarkItem {
                 label: "Keep engine awake".into(),
                 checked: self.keep_awake,
                 activate: Box::new(|this: &mut Self| {
@@ -155,12 +172,15 @@ pub(super) fn build(
 ) -> Result<(), String> {
     let mut microphones = vec![None];
     microphones.extend(crate::capture::list_inputs().into_iter().map(Some));
+    let sounds = app.state::<crate::sounds::Sounds>();
     let tray = SayitTray {
         app: app.clone(),
         status: "warming up…".into(),
         microphone: saved.microphone.clone(),
         microphones,
         keep_awake: saved.keep_awake,
+        completion_voice: sounds.completion_voice(),
+        completion_voice_available: sounds.accept_available(),
         autostart: app.autolaunch().is_enabled().unwrap_or(false),
     };
     let handle = tray.spawn().map_err(|e| e.to_string())?;

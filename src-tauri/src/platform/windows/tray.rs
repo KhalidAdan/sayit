@@ -1,6 +1,6 @@
-//! The tray: sayit's only permanent visible presence. A status line, a
-//! microphone picker, a start-with-Windows toggle, and Quit. Still no
-//! settings screen — these are the key's physical switches, not a config.
+//! The tray: sayit's only permanent visible presence. Status, microphone,
+//! completion voice, engine policy, autostart, and Quit live here as the
+//! key's physical switches rather than a separate settings screen.
 //!
 //! The status text is driven from the TypeScript coordinator (which owns
 //! the state machine) through the `tray_status` command. Rust renders,
@@ -75,6 +75,20 @@ pub(super) fn build(
         saved.keep_awake,
         None::<&str>,
     )?;
+    let sounds = app.state::<crate::sounds::Sounds>();
+    let completion_available = sounds.accept_available();
+    let completion_voice = CheckMenuItem::with_id(
+        app,
+        "completionvoice",
+        if completion_available {
+            "Completion voice"
+        } else {
+            "Completion voice (no sound installed)"
+        },
+        completion_available,
+        sounds.completion_voice(),
+        None::<&str>,
+    )?;
 
     // The dictionary: the one piece of sayit that needs a real window —
     // rows of text want a text editor, not a menu.
@@ -95,6 +109,7 @@ pub(super) fn build(
             &PredefinedMenuItem::separator(app)?,
             &mics,
             &dictionary,
+            &completion_voice,
             &keep_awake,
             &autostart,
             &PredefinedMenuItem::separator(app)?,
@@ -124,6 +139,10 @@ pub(super) fn build(
                     .spawn();
             } else if id == "dictionary" {
                 crate::dictionary::show(app);
+            } else if id == "completionvoice" {
+                let requested = completion_voice.is_checked().unwrap_or(false);
+                let effective = crate::sounds::set_completion_voice(app, requested);
+                let _ = completion_voice.set_checked(effective);
             } else if id == "keepawake" {
                 // The item toggles itself; report the new state upward, let
                 // the coordinator manage its timer, and persist the choice.
