@@ -127,14 +127,13 @@ pub(super) fn build(
             } else if id == "keepawake" {
                 // The item toggles itself; report the new state upward, let
                 // the coordinator manage its timer, and persist the choice.
-                // Persist by load-and-mutate so the untouched fields (the
-                // dictionary!) survive the write.
+                // update() mutates one field under the settings lock, so the
+                // untouched fields (the dictionary!) survive the write even
+                // against a concurrent autosave.
                 let on = keep_awake.is_checked().unwrap_or(false);
                 println!("[sayit] keep engine awake: {on}");
                 let _ = app.emit("keep_awake", on);
-                let mut saved = settings::load(app);
-                saved.keep_awake = on;
-                settings::save(app, &saved);
+                settings::update(app, |saved| saved.keep_awake = on);
             } else if id == "autostart" {
                 let launcher = app.autolaunch();
                 let flip = match launcher.is_enabled() {
@@ -155,9 +154,7 @@ pub(super) fn build(
                 for item in &mic_items {
                     let _ = item.set_checked(item.id().as_ref() == id);
                 }
-                let mut saved = settings::load(app);
-                saved.microphone = choice;
-                settings::save(app, &saved);
+                settings::update(app, |saved| saved.microphone = choice);
             }
         })
         .build(app)?;

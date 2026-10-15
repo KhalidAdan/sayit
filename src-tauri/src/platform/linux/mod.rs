@@ -221,9 +221,7 @@ impl Platform for LinuxBackend {
             return Err("setup is not ready yet".into());
         }
         self.start_trigger(app)?;
-        let mut saved = crate::settings::load(app);
-        saved.setup_complete = true;
-        crate::settings::save(app, &saved);
+        crate::settings::update(app, |saved| saved.setup_complete = true);
         self.set_tray_status("ready — double-tap left Ctrl or remapped Caps");
         if let Some(window) = app.get_webview_window("setup") {
             let _ = window.hide();

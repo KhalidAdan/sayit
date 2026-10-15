@@ -16,7 +16,7 @@
 use crate::settings;
 use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 /// One dictionary rule: what the model mishears → what you actually said.
 #[derive(Clone, Serialize, Deserialize)]
@@ -51,6 +51,10 @@ pub fn init(app: &tauri::AppHandle, saved: &settings::Settings) {
 /// `dictionary_show` command.
 pub fn show(app: &tauri::AppHandle) {
     if let Some(w) = app.get_webview_window("dictionary") {
+        // The page caches its rows from its last load; tell it to refetch
+        // so a window shown hours after boot can never present a stale
+        // list — which its autosave would then write back over the real one.
+        let _ = w.emit("dictionary_reload", ());
         let _ = w.show();
         let _ = w.set_focus();
     }
@@ -71,9 +75,7 @@ pub fn dictionary_save(
     replacements: Vec<Replacement>,
 ) {
     *rules.0.lock().unwrap() = replacements.clone();
-    let mut saved = settings::load(&app);
-    saved.replacements = replacements;
-    settings::save(&app, &saved);
+    settings::update(&app, |saved| saved.replacements = replacements);
 }
 
 /// Live preview for the editor's "try it" box. Runs the REAL apply() over

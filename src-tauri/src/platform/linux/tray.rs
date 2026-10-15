@@ -74,9 +74,7 @@ impl ksni::Tray for SayitTray {
                         let choice = this.microphones.get(index).cloned().flatten();
                         this.microphone = choice.clone();
                         *this.app.state::<crate::MicChoice>().0.lock().unwrap() = choice.clone();
-                        let mut saved = settings::load(&this.app);
-                        saved.microphone = choice;
-                        settings::save(&this.app, &saved);
+                        settings::update(&this.app, |saved| saved.microphone = choice);
                     }),
                 }
                 .into()],
@@ -95,9 +93,8 @@ impl ksni::Tray for SayitTray {
                 activate: Box::new(|this: &mut Self| {
                     this.keep_awake = !this.keep_awake;
                     let _ = this.app.emit("keep_awake", this.keep_awake);
-                    let mut saved = settings::load(&this.app);
-                    saved.keep_awake = this.keep_awake;
-                    settings::save(&this.app, &saved);
+                    let on = this.keep_awake;
+                    settings::update(&this.app, |saved| saved.keep_awake = on);
                 }),
                 ..Default::default()
             }

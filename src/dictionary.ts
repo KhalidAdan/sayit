@@ -6,6 +6,7 @@
 // half-finished rows (empty fields) that render but are never saved.
 
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 
 type Rule = { from: string; to: string };
 
@@ -45,15 +46,22 @@ const complete = () => rules.filter((r) => r.from.trim().length > 0);
 
 let saveTimer: number | undefined;
 let savedTimer: number | undefined;
+// True while an edit sits inside the debounce window — the one moment a
+// reload could silently drop a keystroke, so reload() flushes first.
+let dirty = false;
+
+async function saveNow() {
+  dirty = false;
+  await backend.save(complete());
+  savedFlag.style.opacity = "1";
+  clearTimeout(savedTimer);
+  savedTimer = window.setTimeout(() => (savedFlag.style.opacity = "0"), 1500);
+}
 
 function saveSoon() {
+  dirty = true;
   clearTimeout(saveTimer);
-  saveTimer = window.setTimeout(async () => {
-    await backend.save(complete());
-    savedFlag.style.opacity = "1";
-    clearTimeout(savedTimer);
-    savedTimer = window.setTimeout(() => (savedFlag.style.opacity = "0"), 1500);
-  }, 300);
+  saveTimer = window.setTimeout(() => void saveNow(), 300);
 }
 
 let previewTimer: number | undefined;
@@ -142,15 +150,26 @@ function addRow() {
 
 // ---- boot -----------------------------------------------------------
 
+// Refetch the saved rules and redraw. Runs at boot and again every time
+// the window is shown (Rust emits dictionary_reload), so the editor can
+// never present — and then autosave — a list staler than the disk's.
+async function reload() {
+  if (dirty) {
+    clearTimeout(saveTimer);
+    await saveNow();
+  }
+  rules = await backend.load();
+  // An empty dictionary greets you with a row to fill, not a blank void.
+  if (rules.length === 0) rules.push({ from: "", to: "" });
+  render();
+  previewSoon();
+}
+
 addButton.addEventListener("click", addRow);
 tryInput.addEventListener("input", previewSoon);
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") void backend.hide();
 });
 
-void backend.load().then((saved) => {
-  rules = saved;
-  // An empty dictionary greets you with a row to fill, not a blank void.
-  if (rules.length === 0) rules.push({ from: "", to: "" });
-  render();
-});
+if (inTauri) void listen("dictionary_reload", () => void reload());
+void reload();
