@@ -445,6 +445,15 @@ listen<number>("push_started", (e) => {
 listen<number>("push_finished", (e) => void Effect.runPromise(onPushFinished(e.payload)));
 listen("sidecar_ready", () => void Effect.runPromise(becomeReady));
 
+// Windows: the user picked another trigger key in the tray (or boot found
+// theirs busy). Rust already wrote the tray line; this keeps the "ready —
+// hold F7 to dictate" hint right for every redraw after it.
+listen<string>("trigger_changed", (e) =>
+  void Effect.runPromise(
+    Ref.update(platformRef, (platform) => ({ ...platform, triggerHint: e.payload })),
+  ),
+);
+
 listen("engine_waking", () =>
   void Effect.runPromise(
     Effect.gen(function* () {
