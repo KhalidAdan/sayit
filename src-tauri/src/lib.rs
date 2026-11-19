@@ -6,6 +6,7 @@
 //! decisions, the sidecar thinks.
 
 mod capture;
+mod credits;
 mod dictionary;
 mod hotkey;
 mod inject;
@@ -14,6 +15,7 @@ pub mod platform;
 mod settings;
 mod setup;
 mod sidecar;
+mod silence;
 mod sounds;
 mod transcribe;
 
@@ -38,14 +40,14 @@ fn start_capture(
 /// One take's text plus where every one of its milliseconds went. The
 /// coordinator merges this with its own clocks and the inject timing into
 /// a single per-take breakdown (console + gap-log.csv).
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 struct Take {
     text: String,
     /// Length of the recorded audio itself — the denominator every other
     /// number should be read against.
     audio_ms: u64,
-    /// capture::stop — mic teardown wait + resample.
+    /// capture::stop — release tail + mic teardown wait + resample.
     stop_ms: u64,
     engine_wait_ms: u64,
     attempts: u32,
@@ -60,20 +62,51 @@ struct Take {
 async fn stop_and_transcribe(
     state: tauri::State<'_, capture::CaptureState>,
     rules: tauri::State<'_, dictionary::Rules>,
+    key_up_ms: u64,
 ) -> Result<Take, String> {
     let t = std::time::Instant::now();
-    let samples = capture::stop(&state)?;
+    // key_up_ms is the OS stamp: if speech ran into the release, the stop
+    // keeps listening until the word ends (capture/tail.rs).
+    let samples = capture::stop(&state, key_up_ms)?;
     let stop_ms = t.elapsed().as_millis() as u64;
     let audio_ms = samples.len() as u64 * 1000 / capture::TARGET_SAMPLE_RATE as u64;
     println!(
         "[sayit] captured {:.1}s of audio",
         samples.len() as f32 / capture::TARGET_SAMPLE_RATE as f32
     );
+    // Silence filter, layer 1 (silence.rs): a take with no voice in it
+    // stops here, before the engine — asleep or awake — is ever asked.
+    // Empty text is the coordinator's existing "heard nothing" path; every
+    // engine number stays at its default zero, because none of it ran.
+    if silence::is_silent(&samples) {
+        return Ok(Take {
+            audio_ms,
+            stop_ms,
+            ..Take::default()
+        });
+    }
+    // The dictionary's spellings ride along as Whisper's prompt, so names
+    // come out right the first time; the same vocabulary then checks the
+    // answer for an echo. (The lock drops at the end of this statement —
+    // never held across the .await below.)
+    let vocab = dictionary::vocabulary(&rules.0.lock().unwrap());
+    let prompt = dictionary::prompt(&vocab);
     // Patient: if the take raced an engine wake, wait for it. 90s covers
     // even a first-ever CUDA warmup.
     let (text, timing) =
-        transcribe::transcribe_waiting(samples, std::time::Duration::from_secs(90)).await?;
+        transcribe::transcribe_waiting(samples, prompt, std::time::Duration::from_secs(90)).await?;
     println!("[sayit] transcribed: {text:?}");
+    // Silence filter, layer 3 (credits.rs): drop a subtitle credit the
+    // model tacked on ("Thanks for watching!") — only ever at the very end.
+    let text = credits::strip(&text).to_owned();
+    // Near-silence can make Whisper read the prompt back ("Khalid, sayit,
+    // Tauri"). That's the engine, not you: down the "heard nothing" path.
+    let text = if dictionary::is_prompt_echo(&vocab, &text) {
+        println!("[sayit] dictionary: dropped a prompt echo");
+        String::new()
+    } else {
+        text
+    };
     // The dictionary pass: fix the model's known mishearings before anyone
     // downstream sees the text. In-memory rules, microsecond cost.
     let t = std::time::Instant::now();

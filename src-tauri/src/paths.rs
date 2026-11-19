@@ -73,6 +73,51 @@ pub fn model() -> Result<PathBuf, String> {
     })
 }
 
+/// The Silero VAD weights for whisper-server's `--vad` (sidecar.rs): the
+/// exact file the silence filter was tuned and measured against, pinned by
+/// name and byte size. Official copy: huggingface.co/ggml-org/whisper-vad.
+const VAD_MODEL_FILE: &str = "ggml-silero-v5.1.2.bin";
+const VAD_MODEL_SIZE: u64 = 885_098;
+
+/// Optional, unlike the main model, and only consulted once settings.json
+/// opts in (`"vad": true`): an Err here means "run the engine without
+/// VAD," never "can't run." Searched like the model (SAYIT_VAD_MODEL,
+/// the managed dir, the repo layout), then one more place: right beside
+/// whichever ggml-small.bin was found. A SAYIT_MODEL that points into a
+/// folder of models therefore finds its neighbor with no second variable.
+pub fn vad_model() -> Result<PathBuf, String> {
+    let rel = PathBuf::from("models").join(VAD_MODEL_FILE);
+    let found = find("SAYIT_VAD_MODEL", managed_dir().join(&rel), &[rel])
+        // An override naming a missing file falls through to the search,
+        // rather than handing whisper-server a path it can't open.
+        .filter(|p| p.exists())
+        .or_else(|| {
+            let beside = model().ok()?.with_file_name(VAD_MODEL_FILE);
+            beside.exists().then_some(beside)
+        })
+        .ok_or_else(|| {
+            format!(
+                "{VAD_MODEL_FILE} not found (put it beside ggml-small.bin or set SAYIT_VAD_MODEL)"
+            )
+        })?;
+    usable_vad(found)
+}
+
+/// A VAD file of the wrong size is refused. This isn't fussiness:
+/// whisper-server starts fine with a truncated VAD model, then answers
+/// EVERY request with HTTP 500 (seen while testing this) — a half-downloaded
+/// nicety would kill the key. Without the flags, the engine runs as before.
+fn usable_vad(path: PathBuf) -> Result<PathBuf, String> {
+    let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+    if size != VAD_MODEL_SIZE {
+        return Err(format!(
+            "{} is {size} bytes, expected {VAD_MODEL_SIZE} (truncated or a different version)",
+            path.display()
+        ));
+    }
+    Ok(path)
+}
+
 /// Missing soundpack is not an error — every slot is simply silent.
 pub fn soundpack_dir() -> Option<PathBuf> {
     find(
@@ -108,5 +153,22 @@ mod tests {
             None
         );
         let _ = std::fs::remove_dir_all(&lonely);
+    }
+
+    #[test]
+    fn a_vad_file_of_the_wrong_size_is_refused() {
+        // A truncated download must mean "no VAD," not "every request fails."
+        let dir = std::env::temp_dir().join("sayit-paths-vad");
+        std::fs::create_dir_all(&dir).unwrap();
+        let truncated = dir.join("truncated.bin");
+        std::fs::write(&truncated, vec![0u8; 4096]).unwrap();
+        assert!(usable_vad(truncated).is_err());
+
+        let whole = dir.join("whole.bin");
+        std::fs::write(&whole, vec![0u8; VAD_MODEL_SIZE as usize]).unwrap();
+        assert_eq!(usable_vad(whole.clone()), Ok(whole));
+
+        assert!(usable_vad(dir.join("missing.bin")).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

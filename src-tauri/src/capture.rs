@@ -6,6 +6,11 @@
 //! callback runs on an OS realtime thread — it copies samples out, tracks
 //! the peak level, and does nothing else. A separate monitor thread emits
 //! that level to the webview every 50ms for the waveform.
+//!
+//! The stop doesn't always cut at key-up: if you were still talking as
+//! the key came up, it listens until the word ends (capture/tail.rs).
+
+mod tail;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -16,6 +21,11 @@ use tauri::{AppHandle, Emitter};
 
 /// What Whisper expects. Everything downstream assumes this rate.
 pub const TARGET_SAMPLE_RATE: u32 = 16_000;
+
+/// How often the release tail checks for new audio while it listens. The
+/// driver hands audio over in ~10ms blocks, so polling faster finds
+/// nothing new.
+const TAIL_POLL: std::time::Duration = std::time::Duration::from_millis(10);
 
 #[derive(Default)]
 pub struct Capture {
@@ -201,13 +211,76 @@ pub fn start(
 }
 
 /// Stops recording and returns the whole take as 16kHz mono samples.
-pub fn stop(state: &CaptureState) -> Result<Vec<f32>, String> {
+///
+/// `key_up_ms` is the OS key-up stamp (hotkey::now_ms, wall clock). A
+/// quiet release closes the mic at once, exactly as before. If speech was
+/// still running into the release, the mic stays open until the word
+/// ends, and never past 600ms after key-up (capture/tail.rs). That wait
+/// blocks this thread, the same deal the teardown wait below already
+/// makes.
+pub fn stop(state: &CaptureState, key_up_ms: u64) -> Result<Vec<f32>, String> {
     let session = state
         .lock()
         .unwrap()
         .session
         .take()
         .ok_or("not recording")?;
+
+    // ---- the release tail ----
+    // The session is already out of the shared state, so no lock is held
+    // while we listen. A press during the tail never reaches start(): the
+    // coordinator is in "transcribing" by now, and refuses it.
+    let t = std::time::Instant::now();
+    let rate = session.source_rate;
+    // Swap the take out of the shared buffer (O(1) under the lock). The
+    // callback gets a fresh buffer with a second of room, so it never
+    // allocates mid-tail.
+    let mut recorded = std::mem::replace(
+        &mut *session.samples.lock().unwrap(),
+        Vec::with_capacity(rate as usize),
+    );
+    // The one place two clocks meet. key_up_ms is wall clock (SystemTime,
+    // stamped in hotkey.rs at the OS event), and so is now_ms(): the same
+    // clock read twice, ms apart, so the subtraction is honest. After this
+    // line everything is monotonic: an Instant deadline for the mic, and
+    // sample counts for the audio. A clock change mid-tail can't stretch
+    // the listening.
+    let since_ms = tail::since_key_up(key_up_ms, crate::hotkey::now_ms());
+    let key_up = tail::key_up_index(recorded.len(), rate, since_ms);
+    let deadline = t + std::time::Duration::from_millis(tail::MAX_TAIL_MS.saturating_sub(since_ms));
+    let threshold = tail::speech_threshold(&recorded[..key_up], rate);
+    let decide = |audio: &[f32]| match threshold {
+        Some(threshold) => tail::decide(audio, rate, key_up, threshold),
+        // Nothing but digital zeros before key-up: nothing to finish.
+        None => tail::Tail::Close {
+            ms: 0,
+            why: tail::Why::QuietAtRelease,
+        },
+    };
+    // Decide FIRST, sleep only when told to listen. A quiet release pays
+    // for one pass over its samples (microseconds) and nothing else.
+    let mut verdict = decide(&recorded);
+    let decide_us = t.elapsed().as_micros();
+    while verdict == tail::Tail::Listen {
+        let now = std::time::Instant::now();
+        if now >= deadline {
+            break; // the clock ran out before the audio did
+        }
+        std::thread::sleep(TAIL_POLL.min(deadline - now));
+        recorded.append(&mut *session.samples.lock().unwrap());
+        verdict = decide(&recorded);
+    }
+    let waited_ms = t.elapsed().as_millis() as u64;
+    let (tail_ms, why) = match verdict {
+        tail::Tail::Close { ms, why } => (ms, why.describe()),
+        // Still listening at the deadline: audio arrived late (input
+        // latency, or a stalled device), but the mic closes on time.
+        tail::Tail::Listen => (since_ms + waited_ms, tail::Why::Capped.describe()),
+    };
+    println!(
+        "[timing] tail {tail_ms}ms ({why}) · stop arrived {since_ms}ms after key-up · \
+         waited {waited_ms}ms · decided in {decide_us}µs"
+    );
 
     session.alive.store(false, Ordering::Relaxed);
     let _ = session.stop.send(());
@@ -222,7 +295,8 @@ pub fn stop(state: &CaptureState) -> Result<Vec<f32>, String> {
         Err(_) => eprintln!("[capture] mic teardown hung; proceeding with buffered audio"),
     }
     let teardown_ms = t.elapsed().as_millis();
-    let recorded = std::mem::take(&mut *session.samples.lock().unwrap());
+    // Plus whatever arrived since the tail's last look.
+    recorded.append(&mut *session.samples.lock().unwrap());
     // A duplicate/accidental stop can arrive before ALSA has delivered its
     // first period. Never send an invalid empty WAV to Whisper (where it looks
     // like an engine outage and used to trigger 90 seconds of retries).
