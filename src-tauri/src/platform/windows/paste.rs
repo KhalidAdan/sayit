@@ -4,10 +4,9 @@
 //! paste (its src/windows/paste.rs, MIT; studied, not copied):
 //!
 //! 1. **Out of the history.** The transcript goes on the clipboard marked
-//!    "don't keep this", so a dictation never shows up in Win+V, never
-//!    syncs to the cloud clipboard, and is skipped by clipboard managers
-//!    that honour the mark. The clipboard is the delivery van; the van
-//!    keeps no log.
+//!    "don't keep this", so a dictation never shows up in Win+V and never
+//!    syncs to the cloud clipboard. The clipboard is the delivery van; the
+//!    van keeps no log.
 //! 2. **Restore only what's still ours.** Windows numbers every clipboard
 //!    write. We note the number right after our paste goes on; if it has
 //!    moved by restore time, someone (you) copied something since, and
@@ -144,26 +143,24 @@ pub(super) fn inject(text: &str) -> Result<InjectTiming, String> {
 
 // ───────── 1. out of the history ─────────
 
-/// Mark a clipboard write "don't keep this". Microsoft documents three
-/// registered clipboard formats for it; arboard (3.6) writes each one in
-/// the same open-clipboard session as the text, so no listener ever sees
-/// the text without its marks:
+/// Mark a clipboard write "don't keep this", with two registered clipboard
+/// formats Windows reads. arboard (3.6) writes them in the same
+/// open-clipboard session as the text, so no listener ever sees the text
+/// without its marks:
 ///
-/// - `ExcludeClipboardContentFromMonitorProcessing`: the broad one. Per
-///   Microsoft it keeps the item out of both history and cloud sync, and
-///   it's the convention third-party clipboard managers look for (some
-///   keep their history in a database on disk).
 /// - `CanIncludeInClipboardHistory` = 0: Windows' own Win+V history.
 /// - `CanUploadToCloudClipboard` = 0: "sync across your devices", which
 ///   means Microsoft's servers.
-///
-/// arboard's docs advise that the first one makes the other two
-/// unnecessary. We set all three anyway: it costs three 4-byte writes and
-/// doesn't bet on every listener reading the same mark.
 fn unlisted(set: arboard::Set<'_>) -> arboard::Set<'_> {
-    set.exclude_from_monitoring()
-        .exclude_from_history()
-        .exclude_from_cloud()
+    // Deliberately NOT exclude_from_monitoring() (the third documented
+    // mark, ExcludeClipboardContentFromMonitorProcessing). It tells every
+    // clipboard *monitor* to look away — and Remote Desktop and VM guest
+    // tools are monitors: they carry the clipboard into the remote window
+    // by watching it. With that mark on, a dictation into an RDP or VM
+    // window would paste the remote side's stale clipboard instead.
+    // Everywhere, or it doesn't count. (hex leaves it off too, and
+    // arboard's docs advise against combining it with these two.)
+    set.exclude_from_history().exclude_from_cloud()
 }
 
 // ───────── 2. restore only what's still ours ─────────
@@ -581,11 +578,12 @@ mod tests {
         OpenClipboard, RegisterClipboardFormatW,
     };
 
-    const MARKS: [&str; 3] = [
-        "ExcludeClipboardContentFromMonitorProcessing",
-        "CanIncludeInClipboardHistory",
-        "CanUploadToCloudClipboard",
-    ];
+    /// The two marks `unlisted` sets...
+    const MARKS: [&str; 2] = ["CanIncludeInClipboardHistory", "CanUploadToCloudClipboard"];
+
+    /// ...and the one it deliberately leaves off, so Remote Desktop and VM
+    /// clipboard sync still carry the paste.
+    const LEFT_OFF: &str = "ExcludeClipboardContentFromMonitorProcessing";
 
     /// A registered clipboard format's id, by name.
     fn format_id(name: &str) -> u32 {
@@ -649,7 +647,9 @@ mod tests {
             .text("sayit clipboard test")
             .is_ok();
         let pasted = sequence_number();
-        let marks = MARKS.map(|name| unsafe { IsClipboardFormatAvailable(format_id(name)) != 0 });
+        let on_clipboard = |name: &str| unsafe { IsClipboardFormatAvailable(format_id(name)) != 0 };
+        let marks = MARKS.map(on_clipboard);
+        let left_off = !on_clipboard(LEFT_OFF);
         let read = clipboard.get_text().ok();
         let ansi_read = read_like_an_ansi_app();
         let after_reads = sequence_number();
@@ -663,7 +663,11 @@ mod tests {
         let restored = clipboard.get_text().ok();
 
         assert!(set_ok, "couldn't put the test text on the clipboard");
-        assert_eq!(marks, [true; 3], "marks present: {MARKS:?}");
+        assert_eq!(marks, [true; 2], "marks present: {MARKS:?}");
+        assert!(
+            left_off,
+            "{LEFT_OFF} must stay off, or RDP/VM pastes go stale"
+        );
         assert_eq!(read.as_deref(), Some("sayit clipboard test"));
         assert!(ansi_read, "couldn't read the ANSI flavour");
         assert_eq!(
