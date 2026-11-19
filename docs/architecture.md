@@ -42,6 +42,7 @@ flowchart TD
 
     subgraph DISK["Disk"]
         MODEL["models/ggml-small.bin"]
+        VAD["models/ggml-silero-v5.1.2.bin (optional)"]
         PACK["soundpack/*.ogg|wav"]
         GAPLOG["gap-log.csv"]
     end
@@ -55,6 +56,7 @@ flowchart TD
     TRA -- "WAV over localhost HTTP" --> WS
     WS --> GPU
     MODEL --> WS
+    VAD -- "--vad" --> WS
     SIDE -- "spawn / warmup / kill" --> WS
     INJ -- "set text + Ctrl+V" --> CLIP --> FOCUS
     PACK --> SND --> SPK

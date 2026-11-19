@@ -47,6 +47,7 @@ pub fn start(app: &AppHandle) -> Result<(), String> {
         .arg("127.0.0.1")
         .arg("--port")
         .arg(transcribe::SIDECAR_PORT.to_string());
+    add_vad(&mut command);
     let platform = app.state::<std::sync::Arc<crate::platform::Current>>();
     platform.configure_sidecar(&mut command);
     let child = command
@@ -62,6 +63,58 @@ pub fn start(app: &AppHandle) -> Result<(), String> {
     let _ = app.emit("engine_waking", ());
     tauri::async_runtime::spawn(warmup(app.clone(), std::time::Instant::now()));
     Ok(())
+}
+
+// Silence filter, layer 2: whisper-server's built-in voice activity
+// detector. Silero VAD (a 0.9 MB model the server runs on the CPU) scores
+// each 32 ms slice of the take for "is this speech?"; whisper then hears
+// only the stretches that are. A take of room tone, hum, a breath or key
+// clicks comes back "" instead of the "Thank you." whisper invents for
+// non-speech. Layer 1 (silence.rs) already refused the quiet takes; these
+// are the loud ones it can't judge. The three knobs below were tuned on
+// synthetic clips — TTS speech at normal and very quiet levels, silence,
+// hiss, rumble, hum, a breath, key clicks (numbers in the PR).
+
+/// Speech probability (0–1) a slice needs to count as speech. whisper's
+/// default 0.5 dropped a lone, very quiet "yes" entirely; 0.4 — the value
+/// hex ships — kept it, and still called every noise clip empty. Lower
+/// favors quiet speech; keeping noise out is the other layers' job too.
+const VAD_THRESHOLD: &str = "0.4";
+/// Speech shorter than this is ignored. The default 250 ms risks a clipped
+/// one-syllable word; 160 ms is hex's floor, and layer 1's 180 ms run
+/// rule is built on it.
+const VAD_MIN_SPEECH_MS: &str = "160";
+/// Each detected stretch is widened by this much on both sides before
+/// whisper hears it. The default 30 ms cut "The quick" off the front of a
+/// quiet sentence; 300 ms brought it back. Padding adds audio, not encoder
+/// work — whisper's encoder pads every clip to a 30-second window anyway —
+/// though the pad's own share of the VAD's cost wasn't isolated.
+const VAD_SPEECH_PAD_MS: &str = "300";
+
+/// The engine starts at boot and on every wake from sleep; say which way
+/// the VAD went the first time only.
+static VAD_STATUS_LOGGED: std::sync::Once = std::sync::Once::new();
+
+/// Turn on the VAD if its model file is present and whole (paths.rs).
+/// Absent, the engine runs exactly as it always has.
+fn add_vad(command: &mut Command) {
+    let vad = crate::paths::vad_model();
+    VAD_STATUS_LOGGED.call_once(|| match &vad {
+        Ok(path) => println!("[sayit] engine VAD on: {}", path.display()),
+        Err(why) => println!("[sayit] engine VAD off — {why}"),
+    });
+    if let Ok(path) = vad {
+        command
+            .arg("--vad")
+            .arg("--vad-model")
+            .arg(path)
+            .arg("--vad-threshold")
+            .arg(VAD_THRESHOLD)
+            .arg("--vad-min-speech-duration-ms")
+            .arg(VAD_MIN_SPEECH_MS)
+            .arg("--vad-speech-pad-ms")
+            .arg(VAD_SPEECH_PAD_MS);
+    }
 }
 
 /// Put the engine to sleep: kill the process, free the VRAM. Only the
@@ -96,8 +149,8 @@ async fn warmup(app: AppHandle, spawned: std::time::Instant) {
         if app.state::<Sidecar>().0.lock().unwrap().is_none() {
             return;
         }
-        match transcribe::transcribe(silence.clone()).await {
-            Ok(_) => {
+        match warm_once(&silence).await {
+            Ok(()) => {
                 println!(
                     "[timing] engine warm and ready in {:.1}s ({probe} probe{})",
                     spawned.elapsed().as_secs_f32(),
@@ -112,4 +165,35 @@ async fn warmup(app: AppHandle, spawned: std::time::Instant) {
     }
     eprintln!("[sayit] engine never became ready");
     let _ = app.emit("pipeline_error", "engine never became ready");
+}
+
+/// One warmup request: the silence, with the VAD switched off for this
+/// request only (`vad=false`; whisper-server honors it per request). With
+/// the VAD on, silence never reaches whisper's encoder — so a silent
+/// warmup would warm nothing, and the first real take after every wake
+/// would pay the CUDA start-up warmup exists to hide. Measured while
+/// building this: a VAD-on silent warmup left the first take ~400–600ms
+/// slower than the second; with `vad=false` the first take ran at the
+/// steady-state speed. On an engine started without VAD the field is a
+/// no-op.
+async fn warm_once(silence: &[f32]) -> Result<(), String> {
+    let part = reqwest::multipart::Part::bytes(transcribe::wav_bytes(silence)?)
+        .file_name("audio.wav")
+        .mime_str("audio/wav")
+        .map_err(|e| e.to_string())?;
+    let form = reqwest::multipart::Form::new()
+        .part("file", part)
+        .text("response_format", "json")
+        .text("vad", "false");
+    reqwest::Client::new()
+        .post(format!(
+            "http://127.0.0.1:{}/inference",
+            transcribe::SIDECAR_PORT
+        ))
+        .multipart(form)
+        .send()
+        .await
+        .and_then(|response| response.error_for_status())
+        .map(|_| ())
+        .map_err(|e| e.to_string())
 }

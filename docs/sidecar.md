@@ -31,6 +31,13 @@ procedure remain below so nobody rediscovers this.
   release, 646 MB). Driver 595.97 / CUDA 13.2 runs it fine.
 - `models/ggml-small.bin` — Whisper `small`, 465 MB, from the official
   ggerganov/whisper.cpp Hugging Face repo. Loads as 487 MB in VRAM.
+- `models/ggml-silero-v5.1.2.bin` — Silero VAD for `--vad`, 885,098 bytes,
+  SHA-256 `29940d98d42b91fbd05ce489f3ecf7c72f0a42f027e4875919a28fb4c04ea2cf`, from the
+  official ggml-org/whisper-vad Hugging Face repo. **Optional**: sayit finds it
+  beside `ggml-small.bin` (or via `SAYIT_VAD_MODEL`) and passes the VAD flags;
+  absent, or of any other size, the engine runs without VAD. Windows gets it the
+  same way it gets the model — by hand. Linux setup downloads and verifies it.
+  Delete it to turn the VAD off.
 - The same zip also ships `whisper-stream.exe`, VAD test tools, and Parakeet binaries —
   v3 material, already on disk.
 
@@ -93,3 +100,18 @@ Transcription was word-perfect on all three, including the made-up phrase
    when the v1 smoke test pasted `[BLANK_AUDIO]` into Notepad. `transcribe.rs` strips
    bracketed spans before returning text; a silent take therefore returns `""` and the
    coordinator skips injection.
+7. **Silence never pastes words nobody said** (added with the silence filter).
+   On non-speech, whisper small also invents whole lines ("Thank you.",
+   "Thanks for watching!"). Three layers, cheapest first:
+   - `silence.rs` refuses a take that is quiet AND shapeless (loudest 30 ms
+     window under −50 dBFS, no 180 ms run 12 dB over its own noise floor)
+     before the engine is asked — ~0.25 ms for a 5 s take;
+   - whisper-server's Silero VAD (`--vad`, flags in `sidecar.rs`) blanks loud
+     non-speech: hiss, hum, rumble, breath, key clicks all came back `""`.
+     It is not free: +76 ms on a 6.7 s spoken clip, +420 ms on a 20 s one
+     (RTX 2070, interleaved medians). Non-speech gets faster (~125 → ~30 ms);
+   - `credits.rs` drops a subtitle credit only when it ends the text.
+
+   With the VAD on, silence never reaches the encoder, so the warmup probe sends
+   `vad=false` per request — otherwise it would warm nothing and the first take
+   after each wake would pay ~0.4–0.6 s.
