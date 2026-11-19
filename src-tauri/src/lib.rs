@@ -6,6 +6,7 @@
 //! decisions, the sidecar thinks.
 
 mod capture;
+mod credits;
 mod dictionary;
 mod hotkey;
 mod inject;
@@ -14,6 +15,7 @@ pub mod platform;
 mod settings;
 mod setup;
 mod sidecar;
+mod silence;
 mod sounds;
 mod transcribe;
 
@@ -38,7 +40,7 @@ fn start_capture(
 /// One take's text plus where every one of its milliseconds went. The
 /// coordinator merges this with its own clocks and the inject timing into
 /// a single per-take breakdown (console + gap-log.csv).
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 struct Take {
     text: String,
@@ -72,11 +74,25 @@ async fn stop_and_transcribe(
         "[sayit] captured {:.1}s of audio",
         samples.len() as f32 / capture::TARGET_SAMPLE_RATE as f32
     );
+    // Silence filter, layer 1 (silence.rs): a take with no voice in it
+    // stops here, before the engine — asleep or awake — is ever asked.
+    // Empty text is the coordinator's existing "heard nothing" path; every
+    // engine number stays at its default zero, because none of it ran.
+    if silence::is_silent(&samples) {
+        return Ok(Take {
+            audio_ms,
+            stop_ms,
+            ..Take::default()
+        });
+    }
     // Patient: if the take raced an engine wake, wait for it. 90s covers
     // even a first-ever CUDA warmup.
     let (text, timing) =
         transcribe::transcribe_waiting(samples, std::time::Duration::from_secs(90)).await?;
     println!("[sayit] transcribed: {text:?}");
+    // Silence filter, layer 3 (credits.rs): drop a subtitle credit the
+    // model tacked on ("Thanks for watching!") — only ever at the very end.
+    let text = credits::strip(&text).to_owned();
     // The dictionary pass: fix the model's known mishearings before anyone
     // downstream sees the text. In-memory rules, microsecond cost.
     let t = std::time::Instant::now();
