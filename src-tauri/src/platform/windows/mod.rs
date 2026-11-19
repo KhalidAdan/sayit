@@ -3,6 +3,7 @@
 //! outlive the key, and Tauri's native tray.
 
 mod engine;
+mod paste;
 mod tray;
 
 use crate::inject::InjectTiming;
@@ -12,8 +13,6 @@ use std::path::PathBuf;
 use std::process::{Child, Command};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
-use std::thread::sleep;
-use std::time::{Duration, Instant};
 use tauri::menu::MenuItem;
 use tauri::tray::TrayIcon;
 use tauri::{AppHandle, Emitter, Wry};
@@ -109,74 +108,7 @@ impl Platform for WindowsBackend {
     }
 
     fn inject(&self, text: &str) -> Result<InjectTiming, String> {
-        use enigo::{Direction, Enigo, Key, Keyboard, Settings as EnigoSettings};
-
-        let t_all = Instant::now();
-
-        let mut clipboard = arboard::Clipboard::new().map_err(|e| e.to_string())?;
-        // Save what the user had. v1 preserves text only; an image on the
-        // clipboard is lost to the paste. Known limitation, on the friction list.
-        let saved = clipboard.get_text().ok();
-        let clipboard_save_ms = t_all.elapsed().as_millis() as u64;
-
-        let t = Instant::now();
-        clipboard
-            .set_text(text.to_string())
-            .map_err(|e| e.to_string())?;
-        let clipboard_set_ms = t.elapsed().as_millis() as u64;
-
-        // Windows clipboard updates are not instantaneous; pasting immediately
-        // sometimes pastes the old contents. Small settle delay, found empirically.
-        let t = Instant::now();
-        sleep(Duration::from_millis(60));
-        let settle_ms = t.elapsed().as_millis() as u64;
-
-        let t = Instant::now();
-        let mut enigo = Enigo::new(&EnigoSettings::default()).map_err(|e| e.to_string())?;
-        enigo
-            .key(Key::Control, Direction::Press)
-            .map_err(|e| e.to_string())?;
-        enigo
-            .key(Key::Unicode('v'), Direction::Click)
-            .map_err(|e| e.to_string())?;
-        enigo
-            .key(Key::Control, Direction::Release)
-            .map_err(|e| e.to_string())?;
-        let keystroke_ms = t.elapsed().as_millis() as u64;
-        let visible_ms = t_all.elapsed().as_millis() as u64;
-
-        // The receiving app reads the clipboard asynchronously; restoring too
-        // soon hands it the old contents instead. 300ms is generous and invisible.
-        let t = Instant::now();
-        sleep(Duration::from_millis(300));
-        if let Some(saved) = saved {
-            // Restore on a detached thread: Windows clipboard access can block
-            // indefinitely when another process (clipboard managers) holds it.
-            // The paste already succeeded — a hung restore must cost at worst
-            // the old clipboard contents, never the pipeline.
-            std::thread::spawn(move || {
-                if let Ok(mut clipboard) = arboard::Clipboard::new() {
-                    let _ = clipboard.set_text(saved);
-                }
-            });
-        }
-        let restore_wait_ms = t.elapsed().as_millis() as u64;
-
-        let timing = InjectTiming {
-            clipboard_save_ms,
-            clipboard_set_ms,
-            settle_ms,
-            keystroke_ms,
-            visible_ms,
-            restore_wait_ms,
-            total_ms: t_all.elapsed().as_millis() as u64,
-        };
-        println!(
-            "[timing] inject: save {clipboard_save_ms}ms · set {clipboard_set_ms}ms · settle {settle_ms}ms · \
-             keystroke {keystroke_ms}ms → visible at {visible_ms}ms · restore wait {restore_wait_ms}ms · total {}ms",
-            timing.total_ms
-        );
-        Ok(timing)
+        paste::inject(text)
     }
 
     fn configure_sidecar(&self, command: &mut Command) {
