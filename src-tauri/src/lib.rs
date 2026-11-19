@@ -307,21 +307,27 @@ fn pill_state(app: tauri::AppHandle, pill: Pill) {
     if pill.state == "hidden" {
         let _ = w.hide();
     } else {
-        // Every visible word re-asserts position, visibility, and
-        // click-through. All three are idempotent, and it means there's no
-        // "is it showing?" bookkeeping to race a hide still in flight.
+        // Every visible word re-asserts position and visibility. Both are
+        // idempotent, and it means there's no "is it showing?" bookkeeping
+        // to race a hide still in flight.
         waveform_show(&w);
     }
 }
 
 /// The waveform window sits bottom-center. It must NEVER take focus, or
 /// the paste lands in the wrong place — and since the pill now stays up
-/// through the paste, that rule is load-bearing. Three things hold it:
-/// - `focusable: false` (tauri.conf.json): WS_EX_NOACTIVATE on Windows, so
-///   a click can't activate it;
-/// - `focus: false` (tauri.conf.json): tao shows the window with
-///   SW_SHOWNOACTIVATE instead of SW_SHOW, which would activate it;
-/// - click-through, below: a click lands on whatever is under the pill.
+/// through the paste, that rule is load-bearing. Two settings in
+/// tauri.conf.json hold it:
+/// - `focusable: false`: WS_EX_NOACTIVATE on Windows, so a click can't
+///   activate it;
+/// - `focus: false`: tao shows the window with SW_SHOWNOACTIVATE instead
+///   of SW_SHOW, which would activate it.
+///
+/// Click-through is deferred until it's verified on real Windows: tao's
+/// `set_ignore_cursor_events(true)` adds WS_EX_TRANSPARENT | WS_EX_LAYERED,
+/// and nothing in tao or wry calls SetLayeredWindowAttributes — per the
+/// Win32 docs, a layered window left that way may not be drawn at all. So
+/// a click on the pill still lands on the pill (without moving focus).
 ///
 /// Show/hide live on the Rust side so the webview needs no
 /// window-management capabilities.
@@ -333,9 +339,6 @@ fn waveform_show(w: &tauri::WebviewWindow) {
         let _ = w.set_position(tauri::PhysicalPosition::new(x as i32, y as i32));
     }
     let _ = w.show();
-    // After show(), never before: on Linux, tao sets the input shape on
-    // the GDK window and unwraps it, and a never-shown window has none yet.
-    let _ = w.set_ignore_cursor_events(true);
 }
 
 pub fn run() {

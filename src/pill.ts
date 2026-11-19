@@ -60,8 +60,10 @@ export const lifeMs = (v: Verdict): number =>
 /// When the coordinator hides the window, counted from the moment it sends
 /// the verdict: the page may first hold the thinking light for up to
 /// thinkingMinMs, then the verdict lives its life, then the empty frame
-/// settles. (When nothing was held, the plate is simply invisible — and
-/// click-through — for that last stretch.)
+/// settles. (When nothing was held, the plate is simply invisible for that
+/// last stretch. The window is still there, so a click on that spot lands
+/// on the pill, though never moves focus: click-through is deferred, see
+/// waveform_show in lib.rs.)
 export const hideAfterMs = (v: Verdict): number =>
   TIMING.thinkingMinMs + lifeMs(v) + TIMING.settleMs;
 
