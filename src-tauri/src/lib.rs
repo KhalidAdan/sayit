@@ -85,14 +85,28 @@ async fn stop_and_transcribe(
             ..Take::default()
         });
     }
+    // The dictionary's spellings ride along as Whisper's prompt, so names
+    // come out right the first time; the same vocabulary then checks the
+    // answer for an echo. (The lock drops at the end of this statement —
+    // never held across the .await below.)
+    let vocab = dictionary::vocabulary(&rules.0.lock().unwrap());
+    let prompt = dictionary::prompt(&vocab);
     // Patient: if the take raced an engine wake, wait for it. 90s covers
     // even a first-ever CUDA warmup.
     let (text, timing) =
-        transcribe::transcribe_waiting(samples, std::time::Duration::from_secs(90)).await?;
+        transcribe::transcribe_waiting(samples, prompt, std::time::Duration::from_secs(90)).await?;
     println!("[sayit] transcribed: {text:?}");
     // Silence filter, layer 3 (credits.rs): drop a subtitle credit the
     // model tacked on ("Thanks for watching!") — only ever at the very end.
     let text = credits::strip(&text).to_owned();
+    // Near-silence can make Whisper read the prompt back ("Khalid, sayit,
+    // Tauri"). That's the engine, not you: down the "heard nothing" path.
+    let text = if dictionary::is_prompt_echo(&vocab, &text) {
+        println!("[sayit] dictionary: dropped a prompt echo");
+        String::new()
+    } else {
+        text
+    };
     // The dictionary pass: fix the model's known mishearings before anyone
     // downstream sees the text. In-memory rules, microsecond cost.
     let t = std::time::Instant::now();
