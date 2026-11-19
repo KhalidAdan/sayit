@@ -70,9 +70,10 @@ async fn stop_and_transcribe(
         samples.len() as f32 / capture::TARGET_SAMPLE_RATE as f32
     );
     // The dictionary's spellings ride along as Whisper's prompt, so names
-    // come out right the first time. One snapshot of the rules feeds both
-    // the prompt and the echo check — and no lock is held across .await.
-    let vocab = rules.0.lock().unwrap().clone();
+    // come out right the first time; the same vocabulary then checks the
+    // answer for an echo. (The lock drops at the end of this statement —
+    // never held across the .await below.)
+    let vocab = dictionary::vocabulary(&rules.0.lock().unwrap());
     let prompt = dictionary::prompt(&vocab);
     // Patient: if the take raced an engine wake, wait for it. 90s covers
     // even a first-ever CUDA warmup.
