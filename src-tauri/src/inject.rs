@@ -15,7 +15,9 @@ pub struct InjectTiming {
     pub clipboard_save_ms: u64,
     /// Putting our text on the clipboard.
     pub clipboard_set_ms: u64,
-    /// The empirical wait for the OS to actually commit the clipboard.
+    /// The empirical wait for the OS to actually commit the clipboard. On
+    /// Windows it also absorbs any wait for a held Shift/Alt/Win to come
+    /// up — zero extra unless the user is still holding one.
     pub settle_ms: u64,
     /// Synthesizing the paste chord. The receiving app pastes as this lands.
     pub keystroke_ms: u64,

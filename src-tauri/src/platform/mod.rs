@@ -110,9 +110,11 @@ pub trait Platform: Send + Sync + Sized + 'static {
     // ───────── injection ─────────
 
     /// The blocking paste (callers wrap in `spawn_blocking`). Windows:
-    /// clipboard save → set → settle → enigo Ctrl+V → restore on a detached
-    /// thread. Linux: round-trip to the worker thread that owns the uinput
-    /// device and the Wayland clipboard.
+    /// clipboard save → set (kept out of Win+V history) → settle (stretched
+    /// only while Shift/Alt/Win is held) → one SendInput Ctrl+V → restore on
+    /// a detached thread, only if the clipboard is still ours (paste.rs).
+    /// Linux: round-trip to the worker thread that owns the uinput device
+    /// and the Wayland clipboard.
     fn inject(&self, text: &str) -> Result<InjectTiming, String>;
 
     // ───────── sidecar process ─────────
