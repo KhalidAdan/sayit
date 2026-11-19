@@ -42,7 +42,7 @@ flowchart TD
 
     subgraph DISK["Disk"]
         MODEL["models/ggml-small.bin"]
-        VAD["models/ggml-silero-v5.1.2.bin (optional)"]
+        VAD["models/ggml-silero-v5.1.2.bin (opt-in)"]
         PACK["soundpack/*.ogg|wav"]
         GAPLOG["gap-log.csv"]
     end

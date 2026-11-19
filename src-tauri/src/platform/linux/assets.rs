@@ -21,11 +21,6 @@ const UPDATE_PUBKEY: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk
 const MODEL_URL: &str = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin";
 const MODEL_SHA256: &str = "1be3a9b2063867b937e64e2ec7483364a79917e157fa98c5d94b5c1fffea987b";
 const MODEL_SIZE: u64 = 487_601_967;
-// The silence filter's Silero VAD (sidecar.rs). Name and size live in
-// paths.rs, which refuses any other size at engine start.
-const VAD_URL: &str =
-    "https://huggingface.co/ggml-org/whisper-vad/resolve/main/ggml-silero-v5.1.2.bin";
-const VAD_SHA256: &str = "29940d98d42b91fbd05ce489f3ecf7c72f0a42f027e4875919a28fb4c04ea2cf";
 
 #[derive(Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -349,21 +344,6 @@ pub async fn ensure(app: &AppHandle) -> Result<(), String> {
         &managed.join("models/ggml-small.bin"),
     )
     .await?;
-
-    // Optional, so a failed fetch costs the VAD, not the setup: the engine
-    // simply runs without it. Same resume + size + SHA-256 + atomic rename.
-    if let Err(e) = download(
-        app,
-        "vad",
-        VAD_URL,
-        crate::paths::VAD_MODEL_SIZE,
-        VAD_SHA256,
-        &managed.join("models").join(crate::paths::VAD_MODEL_FILE),
-    )
-    .await
-    {
-        println!("[setup] VAD model unavailable; the engine will run without it ({e})");
-    }
     Ok(())
 }
 

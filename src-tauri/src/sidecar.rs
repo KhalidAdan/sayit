@@ -7,6 +7,7 @@
 //! after the first-ever run). The user never manages any of this — the key
 //! always works, and the tray narrates.
 
+use std::path::PathBuf;
 use std::process::{Child, Command};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
@@ -47,7 +48,7 @@ pub fn start(app: &AppHandle) -> Result<(), String> {
         .arg("127.0.0.1")
         .arg("--port")
         .arg(transcribe::SIDECAR_PORT.to_string());
-    add_vad(&mut command);
+    add_vad(&mut command, crate::settings::load(app).vad);
     let platform = app.state::<std::sync::Arc<crate::platform::Current>>();
     platform.configure_sidecar(&mut command);
     let child = command
@@ -65,15 +66,21 @@ pub fn start(app: &AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-// Silence filter, layer 2: whisper-server's built-in voice activity
-// detector. Silero VAD (a 0.9 MB model the server runs on the CPU) scores
-// each 32 ms slice of the take for "is this speech?"; whisper then hears
-// only the stretches that are. A take of room tone, hum, a breath or key
-// clicks comes back "" instead of the "Thank you." whisper invents for
-// non-speech. Layer 1 (silence.rs) already refused the quiet takes; these
-// are the loud ones it can't judge. The three knobs below were tuned on
-// synthetic clips — TTS speech at normal and very quiet levels, silence,
-// hiss, rumble, hum, a breath, key clicks (numbers in the PR).
+// Silence filter, layer 2 — OPT-IN: whisper-server's built-in voice
+// activity detector. Silero VAD (a 0.9 MB model the server runs on the
+// CPU) scores each 32 ms slice of the take for "is this speech?"; whisper
+// then hears only the stretches that are. A take of room tone, hum, a
+// breath or key clicks comes back "" instead of the "Thank you." whisper
+// invents for non-speech. Layer 1 (silence.rs) already refused the quiet
+// takes; these are the loud ones it can't judge.
+//
+// Off unless settings.json says `"vad": true`, because it widens the gap
+// on every spoken take: +76ms on a 6.7s take, +421ms on a 20s one
+// (RTX 2070, interleaved medians), and its benefit on a real mic is still
+// unproven. The likely future is per-request VAD only for takes the gate
+// can't judge. The three knobs below were tuned on synthetic clips — TTS
+// speech at normal and very quiet levels, silence, hiss, rumble, hum, a
+// breath, key clicks (numbers in the PR).
 
 /// Speech probability (0–1) a slice needs to count as speech. whisper's
 /// default 0.5 dropped a lone, very quiet "yes" entirely; 0.4 — the value
@@ -92,13 +99,30 @@ const VAD_MIN_SPEECH_MS: &str = "160";
 const VAD_SPEECH_PAD_MS: &str = "300";
 
 /// The engine starts at boot and on every wake from sleep; say which way
-/// the VAD went the first time only.
+/// the VAD went the first time only. (Like idle_minutes: edit
+/// settings.json, then restart sayit.)
 static VAD_STATUS_LOGGED: std::sync::Once = std::sync::Once::new();
 
-/// Turn on the VAD if its model file is present and whole (paths.rs).
-/// Absent, the engine runs exactly as it always has.
-fn add_vad(command: &mut Command) {
-    let vad = crate::paths::vad_model();
+/// Should the engine get the VAD flags, and with which file? Only when
+/// BOTH hold: settings.json opted in, and paths.rs found a whole model.
+/// Ok(path) = pass the flags; Err(why) = run exactly as before, and `why`
+/// is the one log line saying so. `find_model` is only called once the
+/// setting says yes — an opted-out sayit never even looks for the file.
+/// Pure (the search is passed in), so the tests can ask it directly.
+fn vad_choice(
+    wanted: bool,
+    find_model: impl FnOnce() -> Result<PathBuf, String>,
+) -> Result<PathBuf, String> {
+    if !wanted {
+        return Err("off by default (opt in: \"vad\": true in settings.json)".into());
+    }
+    find_model().map_err(|why| format!("opted in, but {why}"))
+}
+
+/// Turn on the VAD when `vad_choice` says so; otherwise leave the engine's
+/// command line exactly as it always was.
+fn add_vad(command: &mut Command, wanted: bool) {
+    let vad = vad_choice(wanted, crate::paths::vad_model);
     VAD_STATUS_LOGGED.call_once(|| match &vad {
         Ok(path) => println!("[sayit] engine VAD on: {}", path.display()),
         Err(why) => println!("[sayit] engine VAD off — {why}"),
@@ -196,4 +220,38 @@ async fn warm_once(silence: &[f32]) -> Result<(), String> {
         .and_then(|response| response.error_for_status())
         .map(|_| ())
         .map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn found() -> Result<PathBuf, String> {
+        Ok(PathBuf::from("models/ggml-silero-v5.1.2.bin"))
+    }
+
+    fn missing() -> Result<PathBuf, String> {
+        Err("ggml-silero-v5.1.2.bin not found".into())
+    }
+
+    #[test]
+    fn setting_off_means_no_vad_even_with_the_file_present() {
+        // The default: the gap stays as it was, file or no file.
+        let why = vad_choice(false, found).unwrap_err();
+        assert!(why.contains("\"vad\": true"), "says how to opt in: {why}");
+        // ...and an opted-out sayit doesn't even go looking.
+        assert!(vad_choice(false, || panic!("searched while opted out")).is_err());
+    }
+
+    #[test]
+    fn opted_in_without_the_file_runs_without_vad_and_says_why() {
+        let why = vad_choice(true, missing).unwrap_err();
+        assert!(why.starts_with("opted in, but"), "{why}");
+        assert!(why.contains("not found"), "{why}");
+    }
+
+    #[test]
+    fn opted_in_with_the_file_turns_it_on() {
+        assert_eq!(vad_choice(true, found), found());
+    }
 }

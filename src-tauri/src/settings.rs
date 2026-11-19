@@ -61,6 +61,14 @@ pub struct Settings {
     /// back to F9. Linux ignores it — its trigger is double-tap Ctrl.
     #[serde(default = "default_trigger_key")]
     pub trigger_key: String,
+    /// Opt in to whisper-server's Silero VAD (the silence filter's layer 2,
+    /// sidecar.rs). Edit settings.json to turn it on, then restart sayit;
+    /// it also needs models/ggml-silero-v5.1.2.bin beside the model. Off
+    /// by default because it isn't free: measured +76ms on a 6.7s take and
+    /// +421ms on a 20s one — the gap is the enemy, and the energy gate
+    /// already refuses the quiet takes for free.
+    #[serde(default)]
+    pub vad: bool,
 }
 
 fn default_idle_minutes() -> u64 {
@@ -82,6 +90,7 @@ impl Default for Settings {
             replacements: Vec::new(),
             setup_complete: false,
             trigger_key: default_trigger_key(),
+            vad: false,
         }
     }
 }
@@ -275,6 +284,22 @@ mod tests {
         };
         save_to(&p, &chosen);
         assert_eq!(load_from(&p).trigger_key, "F7");
+    }
+
+    #[test]
+    fn vad_is_off_unless_asked_and_roundtrips() {
+        // Every settings.json written before the field existed: VAD off.
+        let p = dir("vad").join("settings.json");
+        std::fs::write(&p, "{\"idle_minutes\": 5}").unwrap();
+        assert!(!load_from(&p).vad);
+        assert!(!Settings::default().vad);
+
+        let opted_in = Settings {
+            vad: true,
+            ..Settings::default()
+        };
+        save_to(&p, &opted_in);
+        assert!(load_from(&p).vad);
     }
 
     #[test]

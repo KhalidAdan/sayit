@@ -18,7 +18,7 @@ type Snapshot = {
 };
 
 type Progress = {
-  asset: "engine" | "model" | "vad";
+  asset: "engine" | "model";
   downloaded: number;
   total: number;
   phase: "downloading" | "verifying" | "ready";

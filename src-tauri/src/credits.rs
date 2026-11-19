@@ -4,8 +4,9 @@
 //! credit line. So on the breath or pause at the end of a take, the model
 //! sometimes appends one nobody said: "Thanks for watching!", "Please
 //! subscribe.", "Subtitles by the Amara.org community". The energy gate
-//! (silence.rs) and the VAD (sidecar.rs) keep silent takes away from the
-//! engine; this catches a credit glued onto the end of real speech.
+//! (silence.rs) — and the VAD (sidecar.rs), when opted in — keep silent
+//! takes away from the engine; this catches a credit glued onto the end of
+//! real speech.
 //!
 //! Only a credit that ENDS the text — or is the whole text — is dropped.
 //! The same words mid-sentence are speech and stay. The price: a dictation
@@ -14,9 +15,9 @@
 //!
 //! "Thank you." and "you" are deliberately NOT on the list, even though
 //! they're whisper's favorite inventions on silence. People dictate those
-//! words, often as the whole message. Silence is the gate's and the VAD's
-//! job; stripping real words to cover for them would trade a visible bug
-//! for an invisible one.
+//! words, often as the whole message. Silence is the gate's job (and the
+//! opt-in VAD's); stripping real words to cover for them would trade a
+//! visible bug for an invisible one.
 //!
 //! Matching ignores case and punctuation: the text and every credit are
 //! reduced to their words (runs of letters and digits, lowercased), and a

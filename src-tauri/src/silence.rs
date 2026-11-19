@@ -11,8 +11,9 @@
 //! Three layers, cheapest first:
 //! 1. this energy gate (pure arithmetic on the samples: ~50µs per second
 //!    of audio in a release build, so a 5 s take costs about 0.25ms);
-//! 2. whisper-server's own voice detector, Silero VAD (sidecar.rs), for
-//!    takes loud enough to pass here — a fan, a click, a breath;
+//! 2. opt-in (`"vad": true` in settings.json, off by default because it
+//!    widens the gap): whisper-server's own voice detector, Silero VAD
+//!    (sidecar.rs), for takes loud enough to pass here — a fan, a click;
 //! 3. an end-of-text credit strip for what still slips through (credits.rs).
 //!
 //! The rule is hex's (docs/hex-teardown.md §2.4). The take is cut into
@@ -332,8 +333,8 @@ mod tests {
     fn loud_non_speech_is_the_vads_call_not_ours() {
         // The gate's honest boundary: it only refuses what is certainly
         // nothing. A click loud enough to cross -50 dBFS in its window, or a
-        // steady fan, goes to the engine — where Silero VAD (sidecar.rs)
-        // tells noise from speech.
+        // steady fan, goes to the engine — where Silero VAD (sidecar.rs),
+        // when opted in, tells noise from speech.
         let mut click = room(2000, -70.0);
         add_click(&mut click, 1005, -10.0);
         assert!(!Levels::measure(&click).is_silence());

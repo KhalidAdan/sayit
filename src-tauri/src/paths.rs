@@ -76,11 +76,12 @@ pub fn model() -> Result<PathBuf, String> {
 /// The Silero VAD weights for whisper-server's `--vad` (sidecar.rs): the
 /// exact file the silence filter was tuned and measured against, pinned by
 /// name and byte size. Official copy: huggingface.co/ggml-org/whisper-vad.
-pub const VAD_MODEL_FILE: &str = "ggml-silero-v5.1.2.bin";
-pub const VAD_MODEL_SIZE: u64 = 885_098;
+const VAD_MODEL_FILE: &str = "ggml-silero-v5.1.2.bin";
+const VAD_MODEL_SIZE: u64 = 885_098;
 
-/// Optional, unlike the main model: an Err here means "run the engine
-/// without VAD," never "can't run." Searched like the model (SAYIT_VAD_MODEL,
+/// Optional, unlike the main model, and only consulted once settings.json
+/// opts in (`"vad": true`): an Err here means "run the engine without
+/// VAD," never "can't run." Searched like the model (SAYIT_VAD_MODEL,
 /// the managed dir, the repo layout), then one more place: right beside
 /// whichever ggml-small.bin was found. A SAYIT_MODEL that points into a
 /// folder of models therefore finds its neighbor with no second variable.
