@@ -56,10 +56,19 @@ pub struct Settings {
     /// settings.json files written before the rename readable.
     #[serde(default, alias = "linux_setup_complete")]
     pub setup_complete: bool,
+    /// Windows: the F key held to dictate, F1–F12. Switched live from the
+    /// tray's "Trigger key" menu; a hand-edited value outside F1–F12 falls
+    /// back to F9. Linux ignores it — its trigger is double-tap Ctrl.
+    #[serde(default = "default_trigger_key")]
+    pub trigger_key: String,
 }
 
 fn default_idle_minutes() -> u64 {
     5
+}
+
+fn default_trigger_key() -> String {
+    "F9".into()
 }
 
 /// Hand-rolled (not derived) so a missing settings.json gets the same
@@ -72,6 +81,7 @@ impl Default for Settings {
             idle_minutes: default_idle_minutes(),
             replacements: Vec::new(),
             setup_complete: false,
+            trigger_key: default_trigger_key(),
         }
     }
 }
@@ -244,6 +254,27 @@ mod tests {
         let loaded = load_from(&p);
         assert!(loaded.replacements.is_empty());
         assert_eq!(loaded.idle_minutes, 5);
+        assert_eq!(loaded.trigger_key, "F9");
+    }
+
+    #[test]
+    fn files_from_before_the_trigger_key_keep_f9() {
+        let p = dir("pre-trigger").join("settings.json");
+        std::fs::write(&p, "{\"keep_awake\": true}").unwrap();
+        let loaded = load_from(&p);
+        assert!(loaded.keep_awake);
+        assert_eq!(loaded.trigger_key, "F9");
+    }
+
+    #[test]
+    fn trigger_key_roundtrips() {
+        let p = dir("trigger-roundtrip").join("settings.json");
+        let chosen = Settings {
+            trigger_key: "F7".into(),
+            ..Settings::default()
+        };
+        save_to(&p, &chosen);
+        assert_eq!(load_from(&p).trigger_key, "F7");
     }
 
     #[test]

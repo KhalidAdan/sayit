@@ -29,12 +29,14 @@ pub type Current = linux::LinuxBackend;
 
 /// The one OS fact deliberately exported to TypeScript: which platform this
 /// is and how the user triggers dictation (`src/main.ts` renders the hint
-/// in the tray status line).
+/// in the tray status line). The hint is owned, not static: on Windows it
+/// names whichever key the user picked, and a `trigger_changed` event
+/// carries the new hint when they pick another.
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PlatformInfo {
     pub os: &'static str,
-    pub trigger_hint: &'static str,
+    pub trigger_hint: String,
 }
 
 pub trait Platform: Send + Sync + Sized + 'static {
@@ -88,9 +90,10 @@ pub trait Platform: Send + Sync + Sized + 'static {
 
     // ───────── trigger ─────────
 
-    /// Builder-time hook. Windows registers the global-shortcut plugin here
-    /// (its trigger is push-driven and must exist before the app runs);
-    /// platforms that start their trigger later pass the builder through.
+    /// Builder-time hook. Windows installs the global-shortcut plugin here
+    /// (the plugin must exist before the app runs; which key it claims is
+    /// decided later, from settings); platforms that start their trigger
+    /// later pass the builder through.
     fn attach(builder: tauri::Builder<Wry>) -> tauri::Builder<Wry> {
         builder
     }
