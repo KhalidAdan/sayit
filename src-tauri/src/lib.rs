@@ -47,7 +47,7 @@ struct Take {
     /// Length of the recorded audio itself — the denominator every other
     /// number should be read against.
     audio_ms: u64,
-    /// capture::stop — mic teardown wait + resample.
+    /// capture::stop — release tail + mic teardown wait + resample.
     stop_ms: u64,
     engine_wait_ms: u64,
     attempts: u32,
@@ -62,9 +62,12 @@ struct Take {
 async fn stop_and_transcribe(
     state: tauri::State<'_, capture::CaptureState>,
     rules: tauri::State<'_, dictionary::Rules>,
+    key_up_ms: u64,
 ) -> Result<Take, String> {
     let t = std::time::Instant::now();
-    let samples = capture::stop(&state)?;
+    // key_up_ms is the OS stamp: if speech ran into the release, the stop
+    // keeps listening until the word ends (capture/tail.rs).
+    let samples = capture::stop(&state, key_up_ms)?;
     let stop_ms = t.elapsed().as_millis() as u64;
     let audio_ms = samples.len() as u64 * 1000 / capture::TARGET_SAMPLE_RATE as u64;
     println!(
