@@ -12,6 +12,11 @@
 //! and word-boundary aware (a rule for "cat" must never fire inside
 //! "category"). Cost is microseconds against the paste's own 60ms settle
 //! delay — the edit step is free.
+//!
+//! The same rules also work one step EARLIER, during decoding: their `to`
+//! spellings become Whisper's prompt (`prompt`), so the engine is already
+//! expecting "Tauri" when it hears it. `is_prompt_echo` catches the one
+//! way that backfires — near-silence read back as the prompt itself.
 
 use crate::settings;
 use serde::{Deserialize, Serialize};
@@ -156,6 +161,143 @@ fn apply_one(text: &str, from: &str, to: &str) -> String {
     out
 }
 
+// ── The prompt: the dictionary, read to the engine before it listens ──
+//
+// whisper-server accepts a per-request `prompt`: text the decoder treats
+// as if it had just been said, right before this audio. Words in it get
+// more likely, spelled the way the prompt spells them — so "Tauri" comes
+// out as "Tauri" instead of "Torai", before apply() ever has to fix it.
+// apply() still runs afterwards for everything the prompt didn't fix.
+//
+// Whisper-only: a Parakeet-class engine has no prompt slot. If sayit ever
+// switches, apply() keeps working and this simply stops being sent.
+
+/// How long the prompt may get, in UTF-8 bytes.
+///
+/// Whisper's prompt slot holds 224 tokens (half its 448-token text
+/// context). Overflow isn't an error: whisper.cpp keeps the LAST 224
+/// tokens, silently cutting the FIRST terms — the ones listed first. So
+/// the cap must fit a whole list with room to spare.
+///
+/// Measured with whisper.cpp's tokenizer over ggml-small's own vocabulary:
+/// English names cost 2.2–2.6 bytes per token, but all-caps acronyms and
+/// Japanese names only ~1.8 (rare text splits into small pieces). At hex's
+/// 500, those lists overflow (~270 tokens); at 350 the densest measured
+/// list is ~190 tokens. 350 bytes is still 35–45 English names.
+///
+/// Bytes, not characters, because the tokenizer eats bytes: for English
+/// they're the same number; a Japanese character is 3 bytes and is
+/// charged as 3 here, which is what keeps those lists inside the slot.
+const PROMPT_BUDGET: usize = 350;
+
+/// The prompt for this take, or None when the dictionary names nothing —
+/// in which case the request carries no prompt field at all and is exactly
+/// the request sayit always sent.
+///
+/// "Claude, sayit, Tauri": the distinct `to` values, in rule order (like
+/// apply(), earlier rules matter more), joined with ", ".
+pub fn prompt(rules: &[Replacement]) -> Option<String> {
+    let terms = prompt_terms(rules);
+    if terms.is_empty() {
+        None
+    } else {
+        Some(terms.join(", "))
+    }
+}
+
+/// The terms that make up the prompt. Shared by prompt() and
+/// is_prompt_echo(), so the echo check knows exactly what was sent.
+fn prompt_terms(rules: &[Replacement]) -> Vec<String> {
+    let mut terms: Vec<String> = Vec::new();
+    let mut seen: Vec<Vec<String>> = Vec::new();
+    let mut used = 0;
+    for rule in rules {
+        // One line, single-spaced: an expansion like "Best,\n  Khalid"
+        // goes in as "Best, Khalid".
+        let term = rule.to.split_whitespace().collect::<Vec<_>>().join(" ");
+        let key = words(&term);
+        // A deletion (empty `to`) or pure punctuation ("." for "full stop")
+        // names nothing the engine could hear. A repeat — "Claude" from
+        // both "clod" and "cloud", or "claude" after "Claude" — adds
+        // nothing either; the first spelling wins, as in apply().
+        if key.is_empty() || seen.contains(&key) {
+            continue;
+        }
+        // Whole terms only, never a cut-off "Tau". A term too long to fit
+        // is skipped, so one long expansion can't crowd out every name
+        // after it; the shorter ones still get their turn.
+        let separator = if terms.is_empty() { 0 } else { ", ".len() };
+        let cost = separator + term.len();
+        if used + cost > PROMPT_BUDGET {
+            continue;
+        }
+        used += cost;
+        seen.push(key);
+        terms.push(term);
+    }
+    terms
+}
+
+/// Did the engine just read its prompt back to us?
+///
+/// On near-silence, Whisper sometimes "hears" the most likely text it has:
+/// the prompt. Seen on the bundled server: quiet, unintelligible audio
+/// (reversed speech at 5% volume), prompted with "Claude, sayit, Tauri,
+/// Khalid, Parakeet, Effect-TS", came back as "Khalid, sayit, Tauri,
+/// Khalid, Effect-TS". That's the engine talking, not you, so the caller
+/// turns it into an empty take (the existing "heard nothing" path).
+///
+/// The rule: ignoring case, punctuation and spacing, the transcript is
+/// nothing but two or more prompt terms back to back (repeats and any
+/// order count — the echo above is both). Two things stay:
+/// - exactly one listed name: saying just "Khalid" must still type it;
+/// - real speech around the names: "ship sayit on Tauri" is a sentence.
+///
+/// The cost: a take that is deliberately just two listed names ("Claude
+/// Tauri") is dropped too. That is the price of catching echoes that
+/// aren't the whole prompt word for word.
+pub fn is_prompt_echo(rules: &[Replacement], transcript: &str) -> bool {
+    let heard = words(transcript);
+    if heard.is_empty() {
+        return false;
+    }
+    let terms: Vec<Vec<String>> = prompt_terms(rules).iter().map(|t| words(t)).collect();
+    // Exactly one listed name is a real take.
+    if terms.contains(&heard) {
+        return false;
+    }
+    // Can the whole transcript be tiled, end to end, with terms?
+    // can_reach[i] = "the first i heard words are a run of terms". Start
+    // from 0 (nothing heard is trivially covered) and extend each reached
+    // point by every term that matches there. Since the one-term case was
+    // ruled out above, reaching the end means two or more terms.
+    let mut can_reach = vec![false; heard.len() + 1];
+    can_reach[0] = true;
+    for i in 0..heard.len() {
+        if !can_reach[i] {
+            continue;
+        }
+        for term in &terms {
+            if heard[i..].starts_with(term) {
+                can_reach[i + term.len()] = true;
+            }
+        }
+    }
+    can_reach[heard.len()]
+}
+
+/// Lowercase words with punctuation and spacing dropped: "Effect-TS," →
+/// ["effect", "ts"]. The one normalization both the term list and the echo
+/// check use, so "same term" means one thing everywhere. Word characters
+/// are is_word()'s, with apostrophes trimmed off the edges so a quoted
+/// 'Claude' still reads as claude while "it's" stays one word.
+fn words(text: &str) -> Vec<String> {
+    text.split(|c: char| !is_word(c))
+        .map(|w| w.trim_matches('\'').to_lowercase())
+        .filter(|w| !w.is_empty())
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -220,5 +362,178 @@ mod tests {
             apply(&rules, "clod at start and end clod"),
             "Claude at start and end Claude"
         );
+    }
+
+    // ── prompt ──
+
+    /// The six names the PR's TTS evidence used, as a dictionary would
+    /// hold them.
+    fn test_list() -> Vec<Replacement> {
+        vec![
+            rule("clod", "Claude"),
+            rule("say it", "sayit"),
+            rule("torai", "Tauri"),
+            rule("hallid", "Khalid"),
+            rule("periket", "Parakeet"),
+            rule("effect ts", "Effect-TS"),
+        ]
+    }
+
+    #[test]
+    fn no_rules_means_no_prompt() {
+        // None → transcribe.rs sends no prompt field: today's request.
+        assert_eq!(prompt(&[]), None);
+    }
+
+    #[test]
+    fn prompt_is_the_to_spellings_in_rule_order() {
+        assert_eq!(
+            prompt(&test_list()).as_deref(),
+            Some("Claude, sayit, Tauri, Khalid, Parakeet, Effect-TS")
+        );
+    }
+
+    #[test]
+    fn deletions_and_punctuation_contribute_nothing() {
+        let rules = [rule("um", ""), rule("uh", "   "), rule("full stop", ".")];
+        assert_eq!(prompt(&rules), None);
+        let rules = [rule("um", ""), rule("clod", "Claude")];
+        assert_eq!(prompt(&rules).as_deref(), Some("Claude"));
+    }
+
+    #[test]
+    fn repeated_spellings_appear_once_first_spelling_wins() {
+        let rules = [
+            rule("clod", "Claude"),
+            rule("cloud", "Claude"),
+            rule("klod", "claude"),
+            rule("tory", "Tauri"),
+        ];
+        assert_eq!(prompt(&rules).as_deref(), Some("Claude, Tauri"));
+    }
+
+    #[test]
+    fn multi_line_expansions_become_one_line() {
+        let rules = [rule("sig", "Best,\n  Khalid")];
+        assert_eq!(prompt(&rules).as_deref(), Some("Best, Khalid"));
+    }
+
+    #[test]
+    fn prompt_stops_at_a_whole_term_inside_the_budget() {
+        // 40 distinct 9-byte terms (term00x01 …) = 40·9 + 39·2 = 438 bytes:
+        // more than the budget holds.
+        let rules: Vec<Replacement> = (0..40)
+            .map(|i| rule("x", &format!("term{i:02}x{i:02}")))
+            .collect();
+        let p = prompt(&rules).unwrap();
+        assert!(p.len() <= PROMPT_BUDGET, "{} bytes", p.len());
+        // Every piece is a whole term, in order, with none cut short…
+        let pieces: Vec<&str> = p.split(", ").collect();
+        for (i, piece) in pieces.iter().enumerate() {
+            assert_eq!(*piece, format!("term{i:02}x{i:02}"));
+        }
+        // …and the next term genuinely would not have fit.
+        assert!(p.len() + ", ".len() + "term00x00".len() > PROMPT_BUDGET);
+    }
+
+    #[test]
+    fn an_oversized_term_is_skipped_not_cut() {
+        let long = "word ".repeat(100); // ~500 bytes: never fits
+        let rules = [rule("sig", &long), rule("clod", "Claude")];
+        assert_eq!(prompt(&rules).as_deref(), Some("Claude"));
+    }
+
+    #[test]
+    fn budget_counts_bytes_not_characters() {
+        // 田 is one character but three UTF-8 bytes, and the tokenizer is
+        // charged per byte: 120 characters is 360 bytes — over budget,
+        // though far under 350 characters. 100 of them (300 bytes) fit.
+        assert_eq!(prompt(&[rule("x", &"田".repeat(120))]), None);
+        assert!(prompt(&[rule("x", &"田".repeat(100))]).is_some());
+    }
+
+    // ── echo filter ──
+
+    #[test]
+    fn the_whole_prompt_read_back_is_an_echo() {
+        let rules = test_list();
+        // Case, punctuation and spacing don't matter.
+        assert!(is_prompt_echo(
+            &rules,
+            "Claude, sayit, Tauri, Khalid, Parakeet, Effect-TS."
+        ));
+        assert!(is_prompt_echo(
+            &rules,
+            "claude sayit tauri khalid parakeet effect ts"
+        ));
+    }
+
+    #[test]
+    fn a_partial_reordered_run_is_an_echo() {
+        // Regression: exactly what the bundled whisper-server returned for
+        // quiet unintelligible audio with test_list()'s prompt — not the
+        // prompt word for word, so a whole-prompt match would miss it.
+        assert!(is_prompt_echo(
+            &test_list(),
+            "Khalid, sayit, Tauri, Khalid, Effect-TS"
+        ));
+        assert!(is_prompt_echo(&test_list(), "Claude, sayit."));
+    }
+
+    #[test]
+    fn exactly_one_listed_name_is_kept() {
+        let rules = test_list();
+        assert!(!is_prompt_echo(&rules, "Khalid."));
+        assert!(!is_prompt_echo(&rules, "Effect-TS"));
+        // Even when that name could also be read as two shorter terms.
+        let rules = [
+            rule("clod code", "Claude Code"),
+            rule("clod", "Claude"),
+            rule("kode", "Code"),
+        ];
+        assert!(!is_prompt_echo(&rules, "Claude Code."));
+        assert!(is_prompt_echo(&rules, "Claude Code, Claude."));
+    }
+
+    #[test]
+    fn one_term_prompt_said_twice_is_an_echo() {
+        let rules = [rule("hallid", "Khalid")];
+        assert!(!is_prompt_echo(&rules, "Khalid"));
+        assert!(is_prompt_echo(&rules, "Khalid, Khalid."));
+    }
+
+    #[test]
+    fn speech_around_the_names_is_kept() {
+        let rules = test_list();
+        // A real with-prompt transcript from the TTS run: wrong, but speech.
+        assert!(!is_prompt_echo(&rules, "Khalid and Claude, sayit, Tauri"));
+        assert!(!is_prompt_echo(
+            &rules,
+            "The app runs on Tauri with a Rust back-end."
+        ));
+        // A term must match whole words, not a prefix of one.
+        assert!(!is_prompt_echo(&rules, "Claudette, sayit"));
+    }
+
+    #[test]
+    fn no_prompt_means_no_echo() {
+        assert!(!is_prompt_echo(&[], "Claude, sayit"));
+        // Deletion rules name nothing, so "um um" is not an echo of them.
+        assert!(!is_prompt_echo(&[rule("um", "")], "um um"));
+    }
+
+    #[test]
+    fn empty_transcript_is_not_an_echo() {
+        // Already empty: nothing to drop (and nothing to log as an echo).
+        assert!(!is_prompt_echo(&test_list(), ""));
+        assert!(!is_prompt_echo(&test_list(), " . , "));
+    }
+
+    #[test]
+    fn words_normalizes_case_punctuation_and_quotes() {
+        assert_eq!(words("Effect-TS,"), ["effect", "ts"]);
+        assert_eq!(words("  'Claude'  "), ["claude"]);
+        assert_eq!(words("it's"), ["it's"]);
+        assert!(words("... , !").is_empty());
     }
 }

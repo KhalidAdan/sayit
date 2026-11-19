@@ -30,9 +30,11 @@ pub struct Timing {
 /// Like `transcribe`, but patient: while the engine is waking (connection
 /// refused), retry every 500ms until the deadline. The user's take is
 /// often the very first request after a wake — audio must never be lost
-/// to a nap the app itself decided to take.
+/// to a nap the app itself decided to take. Every attempt carries the
+/// same `prompt` (see `transcribe_with_prompt`).
 pub async fn transcribe_waiting(
     samples: Vec<f32>,
+    prompt: Option<String>,
     deadline: Duration,
 ) -> Result<(String, Timing), String> {
     let started = Instant::now();
@@ -41,7 +43,7 @@ pub async fn transcribe_waiting(
         attempts += 1;
         // Everything before the attempt that succeeds is "engine wait".
         let waited_ms = started.elapsed().as_millis() as u64;
-        match transcribe(samples.clone()).await {
+        match transcribe_with_prompt(samples.clone(), prompt.as_deref()).await {
             Ok((text, mut timing)) => {
                 timing.engine_wait_ms = waited_ms;
                 timing.attempts = attempts;
@@ -65,8 +67,18 @@ pub async fn transcribe_waiting(
 }
 
 /// 16kHz mono samples in, whitespace-normalized text out — plus where the
-/// time went.
+/// time went. No prompt: this is the warmup's call (sidecar.rs), which
+/// must stay exactly the request it always was.
 pub async fn transcribe(samples: Vec<f32>) -> Result<(String, Timing), String> {
+    transcribe_with_prompt(samples, None).await
+}
+
+/// `transcribe`, plus an optional prompt (dictionary::prompt — the
+/// spellings the user wants, read to the decoder before the audio).
+pub async fn transcribe_with_prompt(
+    samples: Vec<f32>,
+    prompt: Option<&str>,
+) -> Result<(String, Timing), String> {
     let mut timing = Timing::default();
 
     let t = Instant::now();
@@ -78,9 +90,16 @@ pub async fn transcribe(samples: Vec<f32>) -> Result<(String, Timing), String> {
         .file_name("audio.wav")
         .mime_str("audio/wav")
         .map_err(|e| e.to_string())?;
-    let form = reqwest::multipart::Form::new()
+    let mut form = reqwest::multipart::Form::new()
         .part("file", part)
         .text("response_format", "json");
+    // whisper-server's per-request `prompt` field (its --prompt flag, one
+    // request at a time; it does not stick to later requests — checked on
+    // the bundled v1.9.1). None adds no field at all: a dictionary-less
+    // take sends the same two fields it always did.
+    if let Some(prompt) = prompt {
+        form = form.text("prompt", prompt.to_string());
+    }
 
     let t = Instant::now();
     let response = reqwest::Client::new()

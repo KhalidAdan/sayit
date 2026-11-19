@@ -69,11 +69,24 @@ async fn stop_and_transcribe(
         "[sayit] captured {:.1}s of audio",
         samples.len() as f32 / capture::TARGET_SAMPLE_RATE as f32
     );
+    // The dictionary's spellings ride along as Whisper's prompt, so names
+    // come out right the first time. One snapshot of the rules feeds both
+    // the prompt and the echo check — and no lock is held across .await.
+    let vocab = rules.0.lock().unwrap().clone();
+    let prompt = dictionary::prompt(&vocab);
     // Patient: if the take raced an engine wake, wait for it. 90s covers
     // even a first-ever CUDA warmup.
     let (text, timing) =
-        transcribe::transcribe_waiting(samples, std::time::Duration::from_secs(90)).await?;
+        transcribe::transcribe_waiting(samples, prompt, std::time::Duration::from_secs(90)).await?;
     println!("[sayit] transcribed: {text:?}");
+    // Near-silence can make Whisper read the prompt back ("Khalid, sayit,
+    // Tauri"). That's the engine, not you: down the "heard nothing" path.
+    let text = if dictionary::is_prompt_echo(&vocab, &text) {
+        println!("[sayit] dictionary: dropped a prompt echo");
+        String::new()
+    } else {
+        text
+    };
     // The dictionary pass: fix the model's known mishearings before anyone
     // downstream sees the text. In-memory rules, microsecond cost.
     let t = std::time::Instant::now();
