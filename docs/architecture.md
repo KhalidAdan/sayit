@@ -60,6 +60,7 @@ flowchart TD
     PACK --> SND --> SPK
     TRY --> TRAYAREA
     COORD -- "tray_status" --> TRY
+    COORD -- "pill_state (Rust moves the window, forwards the word)" --> WAVE
     COORD -- "log_gap" --> GAPLOG
 ```
 
