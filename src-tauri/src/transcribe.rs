@@ -66,15 +66,10 @@ pub async fn transcribe_waiting(
     }
 }
 
-/// 16kHz mono samples in, whitespace-normalized text out — plus where the
-/// time went. No prompt: this is the warmup's call (sidecar.rs), which
-/// must stay exactly the request it always was.
-pub async fn transcribe(samples: Vec<f32>) -> Result<(String, Timing), String> {
-    transcribe_with_prompt(samples, None).await
-}
-
-/// `transcribe`, plus an optional prompt (dictionary::prompt — the
-/// spellings the user wants, read to the decoder before the audio).
+/// 16kHz mono samples in, whitespace-normalized text out, plus where the
+/// time went. `prompt` is optional (dictionary::prompt: the spellings the
+/// user wants, read to the decoder before the audio). The engine warmup
+/// in sidecar.rs builds its own request, so it never passes through here.
 pub async fn transcribe_with_prompt(
     samples: Vec<f32>,
     prompt: Option<&str>,
