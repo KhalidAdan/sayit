@@ -3,7 +3,7 @@
 **The key that listens.** Fast, local dictation for Windows and Linux.
 
 - **Linux:** double-tap **left Control** (or Caps Lock when GNOME maps it to Control) to start; tap it once to finish.
-- **Windows:** hold **F9** to dictate; release it to finish.
+- **Windows:** hold **F9** to dictate; release it to finish. Any of F1–F12 can be the key instead: tray → **Trigger key**. The key you pick stops reaching other apps while sayit runs, so F9 (almost unused) is the default.
 - Audio is transcribed locally by Whisper and pasted into the focused app.
 - No account, cloud API, telemetry, or per-use cost.
 
