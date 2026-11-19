@@ -56,10 +56,27 @@ pub struct Settings {
     /// settings.json files written before the rename readable.
     #[serde(default, alias = "linux_setup_complete")]
     pub setup_complete: bool,
+    /// Windows: the F key held to dictate, F1–F12. Switched live from the
+    /// tray's "Trigger key" menu; a hand-edited value outside F1–F12 falls
+    /// back to F9. Linux ignores it — its trigger is double-tap Ctrl.
+    #[serde(default = "default_trigger_key")]
+    pub trigger_key: String,
+    /// Opt in to whisper-server's Silero VAD (the silence filter's layer 2,
+    /// sidecar.rs). Edit settings.json to turn it on, then restart sayit;
+    /// it also needs models/ggml-silero-v5.1.2.bin beside the model. Off
+    /// by default because it isn't free: measured +76ms on a 6.7s take and
+    /// +421ms on a 20s one — the gap is the enemy, and the energy gate
+    /// already refuses the quiet takes for free.
+    #[serde(default)]
+    pub vad: bool,
 }
 
 fn default_idle_minutes() -> u64 {
     5
+}
+
+fn default_trigger_key() -> String {
+    "F9".into()
 }
 
 /// Hand-rolled (not derived) so a missing settings.json gets the same
@@ -72,6 +89,8 @@ impl Default for Settings {
             idle_minutes: default_idle_minutes(),
             replacements: Vec::new(),
             setup_complete: false,
+            trigger_key: default_trigger_key(),
+            vad: false,
         }
     }
 }
@@ -244,6 +263,43 @@ mod tests {
         let loaded = load_from(&p);
         assert!(loaded.replacements.is_empty());
         assert_eq!(loaded.idle_minutes, 5);
+        assert_eq!(loaded.trigger_key, "F9");
+    }
+
+    #[test]
+    fn files_from_before_the_trigger_key_keep_f9() {
+        let p = dir("pre-trigger").join("settings.json");
+        std::fs::write(&p, "{\"keep_awake\": true}").unwrap();
+        let loaded = load_from(&p);
+        assert!(loaded.keep_awake);
+        assert_eq!(loaded.trigger_key, "F9");
+    }
+
+    #[test]
+    fn trigger_key_roundtrips() {
+        let p = dir("trigger-roundtrip").join("settings.json");
+        let chosen = Settings {
+            trigger_key: "F7".into(),
+            ..Settings::default()
+        };
+        save_to(&p, &chosen);
+        assert_eq!(load_from(&p).trigger_key, "F7");
+    }
+
+    #[test]
+    fn vad_is_off_unless_asked_and_roundtrips() {
+        // Every settings.json written before the field existed: VAD off.
+        let p = dir("vad").join("settings.json");
+        std::fs::write(&p, "{\"idle_minutes\": 5}").unwrap();
+        assert!(!load_from(&p).vad);
+        assert!(!Settings::default().vad);
+
+        let opted_in = Settings {
+            vad: true,
+            ..Settings::default()
+        };
+        save_to(&p, &opted_in);
+        assert!(load_from(&p).vad);
     }
 
     #[test]

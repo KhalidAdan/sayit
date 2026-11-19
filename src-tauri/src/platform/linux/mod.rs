@@ -60,7 +60,7 @@ impl Platform for LinuxBackend {
     fn info() -> PlatformInfo {
         PlatformInfo {
             os: "linux",
-            trigger_hint: "double-tap left Ctrl or remapped Caps to dictate",
+            trigger_hint: "double-tap left Ctrl or remapped Caps to dictate".into(),
         }
     }
 

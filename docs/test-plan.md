@@ -48,8 +48,9 @@ Each stage exercised alone against its real dependency:
 ## Layer 2 — End-to-end smoke (run before calling any change done)
 
 The full loop with synthesized input: `scripts/smoke-input.ps1` opens a
-containment Notepad, synthesizes an F9 hold, and the app log is asserted to
-show the full sequence (`sound: press` → `captured` → `transcribed`).
+containment Notepad, synthesizes an F9 hold (`-Key F7` for another trigger
+key), and the app log is asserted to show the full sequence (`sound: press`
+→ `captured` → `transcribed`).
 
 **Containment rule (absolute):** any test that can reach the inject stage
 MUST focus a scratch window first. The pipeline *works*; working means

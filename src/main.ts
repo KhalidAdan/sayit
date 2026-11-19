@@ -242,7 +242,9 @@ const runTake = (keyUpMs: number) => Effect.gen(function* () {
   // does — hung device, dead engine — this state machine returns to idle.
   // 100s clears transcribe_waiting's 90s patience with room to spare.
   const tCall = yield* Clock.currentTimeMillis;
-  const take = yield* cmd<Take>("stop_and_transcribe").pipe(
+  // t0 rides along: the release tail (capture/tail.rs) is measured from
+  // the OS key-up, so the time it took to get here already counts.
+  const take = yield* cmd<Take>("stop_and_transcribe", { keyUpMs: t0 }).pipe(
     Effect.timeout(Duration.seconds(100)),
   );
   const tBack = yield* Clock.currentTimeMillis;
@@ -276,7 +278,7 @@ const runTake = (keyUpMs: number) => Effect.gen(function* () {
         `[gap] ━━ felt ${feltMs}ms · total ${totalMs}ms · ${(take.audioMs / 1000).toFixed(1)}s audio · ${take.text.length} chars`,
         row("dispatch", dispatchMs, "key-up event → coordinator"),
         row("housekeeping", preMs, "tray + waveform IPC"),
-        row("mic stop", take.stopMs, "teardown + resample"),
+        row("mic stop", take.stopMs, "tail + teardown + resample"),
         row("engine wait", take.engineWaitMs, `${take.attempts} attempt${take.attempts === 1 ? "" : "s"}`),
         row("wav encode", take.wavMs),
         row("inference", take.httpMs, "whisper, http round-trip"),
@@ -358,6 +360,15 @@ listen<number>("push_started", (e) => {
 });
 listen<number>("push_finished", (e) => void Effect.runPromise(onPushFinished(e.payload)));
 listen("sidecar_ready", () => void Effect.runPromise(becomeReady));
+
+// Windows: the user picked another trigger key in the tray (or boot found
+// theirs busy). Rust already wrote the tray line; this keeps the "ready —
+// hold F7 to dictate" hint right for every redraw after it.
+listen<string>("trigger_changed", (e) =>
+  void Effect.runPromise(
+    Ref.update(platformRef, (platform) => ({ ...platform, triggerHint: e.payload })),
+  ),
+);
 
 listen("engine_waking", () =>
   void Effect.runPromise(

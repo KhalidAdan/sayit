@@ -1,46 +1,23 @@
 //! The Windows backend: sayit's birthplace. Global-shortcut plugin for the
-//! trigger, enigo Ctrl+V for the paste, a job object so the engine cannot
-//! outlive the key, and Tauri's native tray.
+//! trigger (an F key the user picks; see trigger.rs), enigo Ctrl+V for the
+//! paste, a job object so the engine cannot outlive the key, and Tauri's
+//! native tray.
 
 mod engine;
+mod paste;
 mod tray;
+mod trigger;
 
 use crate::inject::InjectTiming;
 use crate::platform::{Platform, PlatformInfo};
 use crate::settings::Settings;
 use std::path::PathBuf;
 use std::process::{Child, Command};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
-use std::thread::sleep;
-use std::time::{Duration, Instant};
 use tauri::menu::MenuItem;
 use tauri::tray::TrayIcon;
 use tauri::{AppHandle, Emitter, Wry};
 use tauri_plugin_updater::UpdaterExt;
-
-/// The Windows push-to-talk key.
-const PUSH_TO_TALK: &str = "F9";
-
-/// Windows fires auto-repeat Pressed events while the key is held; only the
-/// first may start a take.
-static HELD: AtomicBool = AtomicBool::new(false);
-
-fn on_shortcut(app: &AppHandle, state: tauri_plugin_global_shortcut::ShortcutState) {
-    use tauri_plugin_global_shortcut::ShortcutState;
-    match state {
-        ShortcutState::Pressed => {
-            if !HELD.swap(true, Ordering::SeqCst) {
-                let _ = app.emit("push_started", crate::hotkey::now_ms());
-            }
-        }
-        ShortcutState::Released => {
-            if HELD.swap(false, Ordering::SeqCst) {
-                let _ = app.emit("push_finished", crate::hotkey::now_ms());
-            }
-        }
-    }
-}
 
 pub struct WindowsBackend {
     /// (tray icon, status menu item) — populated by `build_tray`.
@@ -71,7 +48,7 @@ impl Platform for WindowsBackend {
     fn info() -> PlatformInfo {
         PlatformInfo {
             os: "windows",
-            trigger_hint: "hold F9 to dictate",
+            trigger_hint: trigger::hint(),
         }
     }
 
@@ -98,85 +75,18 @@ impl Platform for WindowsBackend {
         ]
     }
 
+    /// The plugin goes in with a handler and no keys: the key is a user
+    /// choice, claimed in start_normal once settings can be read.
     fn attach(builder: tauri::Builder<Wry>) -> tauri::Builder<Wry> {
         builder.plugin(
             tauri_plugin_global_shortcut::Builder::new()
-                .with_shortcuts([PUSH_TO_TALK])
-                .expect("push-to-talk key is not a valid shortcut")
-                .with_handler(|app, _shortcut, event| on_shortcut(app, event.state()))
+                .with_handler(|app, _shortcut, event| trigger::on_shortcut(app, event.state()))
                 .build(),
         )
     }
 
     fn inject(&self, text: &str) -> Result<InjectTiming, String> {
-        use enigo::{Direction, Enigo, Key, Keyboard, Settings as EnigoSettings};
-
-        let t_all = Instant::now();
-
-        let mut clipboard = arboard::Clipboard::new().map_err(|e| e.to_string())?;
-        // Save what the user had. v1 preserves text only; an image on the
-        // clipboard is lost to the paste. Known limitation, on the friction list.
-        let saved = clipboard.get_text().ok();
-        let clipboard_save_ms = t_all.elapsed().as_millis() as u64;
-
-        let t = Instant::now();
-        clipboard
-            .set_text(text.to_string())
-            .map_err(|e| e.to_string())?;
-        let clipboard_set_ms = t.elapsed().as_millis() as u64;
-
-        // Windows clipboard updates are not instantaneous; pasting immediately
-        // sometimes pastes the old contents. Small settle delay, found empirically.
-        let t = Instant::now();
-        sleep(Duration::from_millis(60));
-        let settle_ms = t.elapsed().as_millis() as u64;
-
-        let t = Instant::now();
-        let mut enigo = Enigo::new(&EnigoSettings::default()).map_err(|e| e.to_string())?;
-        enigo
-            .key(Key::Control, Direction::Press)
-            .map_err(|e| e.to_string())?;
-        enigo
-            .key(Key::Unicode('v'), Direction::Click)
-            .map_err(|e| e.to_string())?;
-        enigo
-            .key(Key::Control, Direction::Release)
-            .map_err(|e| e.to_string())?;
-        let keystroke_ms = t.elapsed().as_millis() as u64;
-        let visible_ms = t_all.elapsed().as_millis() as u64;
-
-        // The receiving app reads the clipboard asynchronously; restoring too
-        // soon hands it the old contents instead. 300ms is generous and invisible.
-        let t = Instant::now();
-        sleep(Duration::from_millis(300));
-        if let Some(saved) = saved {
-            // Restore on a detached thread: Windows clipboard access can block
-            // indefinitely when another process (clipboard managers) holds it.
-            // The paste already succeeded — a hung restore must cost at worst
-            // the old clipboard contents, never the pipeline.
-            std::thread::spawn(move || {
-                if let Ok(mut clipboard) = arboard::Clipboard::new() {
-                    let _ = clipboard.set_text(saved);
-                }
-            });
-        }
-        let restore_wait_ms = t.elapsed().as_millis() as u64;
-
-        let timing = InjectTiming {
-            clipboard_save_ms,
-            clipboard_set_ms,
-            settle_ms,
-            keystroke_ms,
-            visible_ms,
-            restore_wait_ms,
-            total_ms: t_all.elapsed().as_millis() as u64,
-        };
-        println!(
-            "[timing] inject: save {clipboard_save_ms}ms · set {clipboard_set_ms}ms · settle {settle_ms}ms · \
-             keystroke {keystroke_ms}ms → visible at {visible_ms}ms · restore wait {restore_wait_ms}ms · total {}ms",
-            timing.total_ms
-        );
-        Ok(timing)
+        paste::inject(text)
     }
 
     fn configure_sidecar(&self, command: &mut Command) {
@@ -190,6 +100,7 @@ impl Platform for WindowsBackend {
     }
 
     fn start_normal(&self, app: &AppHandle) {
+        trigger::claim_saved(app);
         // A previous sayit that died uncleanly may have left its engine
         // behind, still holding VRAM and port 8642. Clear it before
         // spawning ours, or we'd run two (docs/sidecar.md).
@@ -200,9 +111,9 @@ impl Platform for WindowsBackend {
         }
     }
 
-    /// The global shortcut either registered at attach() or the app never
-    /// built; there is no probe to run. Static answers, preserved verbatim
-    /// from the pre-platform setup screen. Honest probing is future work.
+    /// Static answers, preserved verbatim from the pre-platform setup
+    /// screen; Windows never shows that screen. Honest probing (e.g. "is
+    /// the trigger key claimed?") is future work.
     fn keyboard_probe(&self) -> (bool, String) {
         (true, "Windows global shortcut".into())
     }
