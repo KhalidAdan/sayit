@@ -194,13 +194,22 @@ const PROMPT_BUDGET: usize = 350;
 /// in which case the request carries no prompt field at all and is exactly
 /// the request sayit always sent.
 ///
-/// "Claude, sayit, Tauri": the vocabulary's terms joined with ", ".
+/// "Claude, sayit, Tauri.": the vocabulary's terms joined with ", ", and
+/// closed with a period. The period is measured, not style: on the PR's
+/// 16 TTS clips the bare list got "Parakeet" wrong in both voices
+/// ("Parakeeet", "ParakeeT") and the closed one got all 12 single-name
+/// clips right, changing nothing else. (Our guess: a finished sentence
+/// reads as earlier speech, not as a list the audio should continue.)
 pub fn prompt(vocabulary: &[String]) -> Option<String> {
     if vocabulary.is_empty() {
-        None
-    } else {
-        Some(vocabulary.join(", "))
+        return None;
     }
+    let mut prompt = vocabulary.join(", ");
+    // A last term that already ends a sentence ("etc.") isn't doubled.
+    if !prompt.ends_with(['.', '!', '?']) {
+        prompt.push('.');
+    }
+    Some(prompt)
 }
 
 /// The words the engine should expect this take: the distinct `to`
@@ -211,7 +220,9 @@ pub fn prompt(vocabulary: &[String]) -> Option<String> {
 pub fn vocabulary(rules: &[Replacement]) -> Vec<String> {
     let mut terms: Vec<String> = Vec::new();
     let mut seen: Vec<Vec<String>> = Vec::new();
-    let mut used = 0;
+    // Start with the closing period prompt() adds already paid for, so the
+    // whole prompt — not just the list — stays inside the budget.
+    let mut used = ".".len();
     for rule in rules {
         // One line, single-spaced: an expansion like "Best,\n  Khalid"
         // goes in as "Best, Khalid".
@@ -243,10 +254,11 @@ pub fn vocabulary(rules: &[Replacement]) -> Vec<String> {
 ///
 /// On near-silence, Whisper sometimes "hears" the most likely text it has:
 /// the prompt. Seen on the bundled server: quiet, unintelligible audio
-/// (reversed speech at 5% volume), prompted with "Claude, sayit, Tauri,
-/// Khalid, Parakeet, Effect-TS", came back as "Khalid, sayit, Tauri,
-/// Khalid, Effect-TS". That's the engine talking, not you, so the caller
-/// turns it into an empty take (the existing "heard nothing" path).
+/// (reversed speech at 5% volume), prompted with the bare list "Claude,
+/// sayit, Tauri, Khalid, Parakeet, Effect-TS", came back as "Khalid,
+/// sayit, Tauri, Khalid, Effect-TS". That's the engine talking, not you,
+/// so the caller turns it into an empty take (the existing "heard
+/// nothing" path).
 ///
 /// The rule: ignoring case, punctuation and spacing, the transcript is
 /// nothing but two or more prompt terms back to back (repeats and any
@@ -400,7 +412,7 @@ mod tests {
     fn prompt_is_the_to_spellings_in_rule_order() {
         assert_eq!(
             prompt_of(&test_list()).as_deref(),
-            Some("Claude, sayit, Tauri, Khalid, Parakeet, Effect-TS")
+            Some("Claude, sayit, Tauri, Khalid, Parakeet, Effect-TS.")
         );
     }
 
@@ -409,7 +421,7 @@ mod tests {
         let rules = [rule("um", ""), rule("uh", "   "), rule("full stop", ".")];
         assert_eq!(prompt_of(&rules), None);
         let rules = [rule("um", ""), rule("clod", "Claude")];
-        assert_eq!(prompt_of(&rules).as_deref(), Some("Claude"));
+        assert_eq!(prompt_of(&rules).as_deref(), Some("Claude."));
     }
 
     #[test]
@@ -420,26 +432,33 @@ mod tests {
             rule("klod", "claude"),
             rule("tory", "Tauri"),
         ];
-        assert_eq!(prompt_of(&rules).as_deref(), Some("Claude, Tauri"));
+        assert_eq!(prompt_of(&rules).as_deref(), Some("Claude, Tauri."));
     }
 
     #[test]
     fn multi_line_expansions_become_one_line() {
         let rules = [rule("sig", "Best,\n  Khalid")];
-        assert_eq!(prompt_of(&rules).as_deref(), Some("Best, Khalid"));
+        assert_eq!(prompt_of(&rules).as_deref(), Some("Best, Khalid."));
+    }
+
+    #[test]
+    fn the_closing_period_is_never_doubled() {
+        let rules = [rule("clod", "Claude"), rule("acme", "Acme Inc.")];
+        assert_eq!(prompt_of(&rules).as_deref(), Some("Claude, Acme Inc."));
     }
 
     #[test]
     fn prompt_stops_at_a_whole_term_inside_the_budget() {
-        // 40 distinct 9-byte terms (term00x01 …) = 40·9 + 39·2 = 438 bytes:
-        // more than the budget holds.
+        // 40 distinct 9-byte terms (term00x00 …) = 40·9 + 39·2 + 1 = 439
+        // bytes: more than the budget holds.
         let rules: Vec<Replacement> = (0..40)
             .map(|i| rule("x", &format!("term{i:02}x{i:02}")))
             .collect();
         let p = prompt_of(&rules).unwrap();
+        // The whole prompt, closing period included, fits.
         assert!(p.len() <= PROMPT_BUDGET, "{} bytes", p.len());
         // Every piece is a whole term, in order, with none cut short…
-        let pieces: Vec<&str> = p.split(", ").collect();
+        let pieces: Vec<&str> = p.trim_end_matches('.').split(", ").collect();
         for (i, piece) in pieces.iter().enumerate() {
             assert_eq!(*piece, format!("term{i:02}x{i:02}"));
         }
@@ -451,7 +470,7 @@ mod tests {
     fn an_oversized_term_is_skipped_not_cut() {
         let long = "word ".repeat(100); // ~500 bytes: never fits
         let rules = [rule("sig", &long), rule("clod", "Claude")];
-        assert_eq!(prompt_of(&rules).as_deref(), Some("Claude"));
+        assert_eq!(prompt_of(&rules).as_deref(), Some("Claude."));
     }
 
     #[test]
@@ -479,8 +498,9 @@ mod tests {
     #[test]
     fn a_partial_reordered_run_is_an_echo() {
         // Regression: exactly what the bundled whisper-server returned for
-        // quiet unintelligible audio with test_list()'s prompt — not the
-        // prompt word for word, so a whole-prompt match would miss it.
+        // quiet unintelligible audio with test_list()'s terms as the prompt
+        // (bare list, before the closing period) — not the prompt word for
+        // word, so a whole-prompt match would miss it.
         assert!(echo(
             &test_list(),
             "Khalid, sayit, Tauri, Khalid, Effect-TS"
