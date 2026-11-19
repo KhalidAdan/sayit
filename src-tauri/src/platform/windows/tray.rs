@@ -1,17 +1,20 @@
 //! The tray: sayit's only permanent visible presence. A status line, a
-//! microphone picker, a start-with-Windows toggle, and Quit. Still no
-//! settings screen — these are the key's physical switches, not a config.
+//! microphone picker, a trigger-key picker, a start-with-Windows toggle,
+//! and Quit. Still no settings screen — these are the key's physical
+//! switches, not a config.
 //!
 //! The status text is driven from the TypeScript coordinator (which owns
 //! the state machine) through the `tray_status` command. Rust renders,
 //! TS decides — same seam as everything else.
 
-use super::WindowsBackend;
+use super::{trigger, WindowsBackend};
+use std::sync::Arc;
 use tauri::menu::{CheckMenuItem, IsMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Emitter, Manager, Wry};
 use tauri_plugin_autostart::ManagerExt;
 
+use crate::platform::Platform;
 use crate::{settings, MicChoice};
 
 pub(super) fn build(
@@ -49,6 +52,29 @@ pub(super) fn build(
         .map(|i| i as &dyn IsMenuItem<Wry>)
         .collect();
     let mics = Submenu::with_id_and_items(app, "mics", "Microphone", true, &mic_refs)?;
+
+    // Trigger-key picker: F1–F12, the saved choice pre-checked. The tray is
+    // built before boot claims the key, so the check reflects the choice;
+    // whether the claim worked is the status line's job.
+    let saved_key = trigger::saved_key(saved);
+    let key_items = trigger::KEYS
+        .iter()
+        .map(|&key| {
+            CheckMenuItem::with_id(
+                app,
+                format!("key:{key}"),
+                key,
+                true,
+                key == saved_key,
+                None::<&str>,
+            )
+        })
+        .collect::<tauri::Result<Vec<_>>>()?;
+    let key_refs: Vec<&dyn IsMenuItem<Wry>> = key_items
+        .iter()
+        .map(|i| i as &dyn IsMenuItem<Wry>)
+        .collect();
+    let keys = Submenu::with_id_and_items(app, "keys", "Trigger key", true, &key_refs)?;
 
     // Autostart only makes sense for the built app: enabling it from a dev
     // run would register the debug exe, which needs the vite server to be
@@ -94,6 +120,7 @@ pub(super) fn build(
             &status,
             &PredefinedMenuItem::separator(app)?,
             &mics,
+            &keys,
             &dictionary,
             &keep_awake,
             &autostart,
@@ -155,6 +182,31 @@ pub(super) fn build(
                     let _ = item.set_checked(item.id().as_ref() == id);
                 }
                 settings::update(app, |saved| saved.microphone = choice);
+            } else if let Some(key) = id.strip_prefix("key:") {
+                // Claim first, save only on success: a key another app owns
+                // must never become the saved choice. The status line says
+                // what happened until the next take redraws it.
+                let status = match trigger::claim(app, key) {
+                    Ok(()) => {
+                        settings::update(app, |saved| saved.trigger_key = key.to_string());
+                        format!("trigger key: {key} — hold it to dictate")
+                    }
+                    Err(why) => {
+                        eprintln!("[sayit] trigger: {why}");
+                        match trigger::claimed() {
+                            Some(old) => format!("{why} — still on {old}"),
+                            None => format!("{why} — try another key"),
+                        }
+                    }
+                };
+                app.state::<Arc<WindowsBackend>>().set_tray_status(&status);
+                // Clicking a check item toggles it; redraw all twelve from
+                // the truth so exactly the chosen key stays checked.
+                let chosen = trigger::chosen();
+                for item in &key_items {
+                    let mine = item.id().as_ref().strip_prefix("key:");
+                    let _ = item.set_checked(mine.is_some() && mine == chosen.as_deref());
+                }
             }
         })
         .build(app)?;
