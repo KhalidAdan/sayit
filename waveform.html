@@ -6,7 +6,13 @@
     <style>
       /* Transparent window: the pill is the only visible surface.
          Dark-mode rules: no outer shadow; definition comes from an inset
-         ring (white/6); surface sits just above pure black (zinc-950). */
+         ring (white/6); surface sits just above pure black (zinc-950).
+         The two colours: sayit gold (the bars, the thinking light) and a
+         warm ember red that only a failure ever uses. */
+      :root {
+        --gold: 232 176 74;
+        --ember: 240 98 76;
+      }
       html,
       body {
         margin: 0;
@@ -28,10 +34,113 @@
         width: calc(100% - 32px);
         height: calc(100% - 26px);
       }
+
+      /* The one-line message (heard nothing, or why a take failed). System
+         font on purpose, like the dictionary window: no webfont, the pill
+         must render instantly and offline. */
+      #note {
+        position: absolute;
+        inset: 0;
+        margin: 0;
+        padding: 0 24px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        font: 500 14px/1 ui-sans-serif, system-ui, sans-serif;
+        color: #d4d4d8; /* zinc-300: heard nothing is news, not an alarm */
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      #note[hidden] {
+        display: none;
+      }
+      #note .dot {
+        flex: none;
+        width: 6px;
+        height: 6px;
+        border-radius: 9999px;
+        background: rgb(var(--ember));
+      }
+      #pill:not([data-state="failed"]) #note .dot {
+        display: none;
+      }
+
+      /* ---- state looks (waveform.ts sets data-state, --life, --fade) ---- */
+
+      /* Nothing to show yet: an empty plate, so the first frame of the
+         next show is never a stale one. */
+      #pill[data-state="hidden"] {
+        opacity: 0;
+      }
+      /* Every verdict leaves the same way: a fade that ends exactly at the
+         end of its life (pill.ts TIMING), just before the window hides. */
+      #pill[data-state="done"],
+      #pill[data-state="heard-nothing"],
+      #pill[data-state="failed"] {
+        animation: leave var(--fade) ease-in calc(var(--life) - var(--fade)) forwards;
+      }
+      #pill[data-state="heard-nothing"] #note,
+      #pill[data-state="failed"] #note {
+        animation: arrive 120ms ease-out;
+      }
+      /* Failed: one warm-red flash, settling to a faint ember ring that
+         stays for the whole notice — a glance at second three still says
+         "that one failed". */
+      #pill[data-state="failed"] {
+        box-shadow: inset 0 0 0 1px rgb(var(--ember) / 0.4);
+        animation:
+          flash 600ms ease-out,
+          leave var(--fade) ease-in calc(var(--life) - var(--fade)) forwards;
+      }
+      #pill[data-state="failed"] #note {
+        color: #f4f4f5; /* zinc-100 */
+      }
+
+      @keyframes leave {
+        to {
+          opacity: 0;
+        }
+      }
+      @keyframes arrive {
+        from {
+          opacity: 0;
+        }
+      }
+      @keyframes flash {
+        from {
+          background-color: rgb(58 22 18 / 0.92);
+          box-shadow:
+            inset 0 0 0 1px rgb(var(--ember) / 0.95),
+            inset 0 0 28px rgb(var(--ember) / 0.45);
+        }
+      }
+
+      /* Reduced motion: state changes land with no animation at all — no
+         flash, no fades (waveform.ts also stills the canvas). A verdict
+         still clears the plate the instant its life is up: a 0s step, not
+         motion, so the window never hides on a lit frame. */
+      @media (prefers-reduced-motion: reduce) {
+        #pill[data-state="done"],
+        #pill[data-state="heard-nothing"],
+        #pill[data-state="failed"] {
+          animation: leave 0s var(--life) forwards;
+        }
+        #pill[data-state="heard-nothing"] #note,
+        #pill[data-state="failed"] #note {
+          animation: none;
+        }
+      }
     </style>
   </head>
   <body>
-    <div id="pill"><canvas id="wave"></canvas></div>
+    <div id="pill" data-state="hidden">
+      <canvas id="wave"></canvas>
+      <p id="note" role="status" aria-live="polite" hidden>
+        <span class="dot" aria-hidden="true"></span><span id="note-text"></span>
+      </p>
+    </div>
     <script type="module" src="/src/waveform.ts"></script>
   </body>
 </html>

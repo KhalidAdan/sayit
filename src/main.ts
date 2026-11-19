@@ -12,7 +12,8 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { Clock, Data, Duration, Effect, Fiber, Ref } from "effect";
+import { Clock, Data, Duration, Effect, Fiber, Queue, Ref } from "effect";
+import { failed, hideAfterMs, type Failure, type Pill, type Verdict } from "./pill";
 
 type State = "idle" | "recording" | "transcribing" | "injecting";
 type Engine = "sleeping" | "waking" | "ready";
@@ -66,8 +67,6 @@ const sound = (slot: "press" | "refuse" | "accept") =>
   cmd("play_sound", { slot }).pipe(Effect.ignore);
 const trayStatus = (text: string) =>
   cmd("tray_status", { text }).pipe(Effect.ignore);
-const waveform = (visible: boolean) =>
-  cmd(visible ? "waveform_show" : "waveform_hide").pipe(Effect.ignore);
 
 const stateRef = Ref.unsafeMake<State>("idle");
 // The quick-tap seam: a sub-100ms tap delivers push_finished while
@@ -77,7 +76,12 @@ const stateRef = Ref.unsafeMake<State>("idle");
 // stamp for the press fiber's finalizer to replay.
 const pressInFlightRef = Ref.unsafeMake(false);
 const releasedDuringStartRef = Ref.unsafeMake<number | null>(null);
-const heardNothingRef = Ref.unsafeMake(false);
+// How the take that just ended went, left for show("idle") to announce
+// once: the pill's last word and the tray's idle line both read it.
+const outcomeRef = Ref.unsafeMake<Verdict | null>(null);
+// The last take's failure, in plain words. The tray's idle line keeps it
+// until a take gets through (text typed, or an honest "heard nothing").
+const lastFailureRef = Ref.unsafeMake<string | null>(null);
 const engineRef = Ref.unsafeMake<Engine>("waking"); // boot starts the engine
 const keepAwakeRef = Ref.unsafeMake(false);
 const lastGapMs = Ref.unsafeMake<number | null>(null);
@@ -119,6 +123,54 @@ const armSleepTimer = Effect.gen(function* () {
   yield* Ref.set(sleepTimerRef, fiber);
 });
 
+// ---- the pill: the waveform window's word ---------------------------
+
+// One mailbox, one reader. Dropping a word in is synchronous and never
+// waits on IPC, so the pipeline never pays for the pill; the reader sends
+// the words to Rust one at a time, so they arrive in the order they were
+// decided (two invokes in flight at once carry no such promise).
+const pillMailbox = Effect.runSync(Queue.unbounded<Pill>());
+Effect.runFork(
+  Queue.take(pillMailbox).pipe(
+    Effect.flatMap((pill) => cmd("pill_state", { pill }).pipe(Effect.ignore)),
+    Effect.forever,
+  ),
+);
+
+// The pill's pending later word: the hide at the end of a verdict's life.
+// Any newer word cancels it — the next press dismisses a notice early.
+const pillLaterRef = Ref.unsafeMake<Fiber.RuntimeFiber<void, never> | null>(null);
+
+const cancelPillLater = Effect.gen(function* () {
+  const later = yield* Ref.getAndSet(pillLaterRef, null);
+  // interruptFork, like cancelSleepTimer: never wait for the timer to die.
+  if (later) yield* Fiber.interruptFork(later);
+});
+
+const pill = (next: Pill) =>
+  Effect.gen(function* () {
+    yield* cancelPillLater;
+    yield* Queue.offer(pillMailbox, next);
+  });
+
+// The take is over: say how it went, then take the window down once the
+// verdict has lived its life (pill.ts hideAfterMs — which includes the
+// pill page's right to hold the thinking light for its minimum first).
+// Interruptible for the same reason as armSleepTimer: this forks inside
+// show("idle"), inside a finalizer, and the next press must be able to
+// cancel it.
+const settlePill = (verdict: Verdict) =>
+  Effect.gen(function* () {
+    yield* pill(verdict);
+    const fiber = yield* Effect.sleep(Duration.millis(hideAfterMs(verdict))).pipe(
+      Effect.zipRight(Queue.offer(pillMailbox, { state: "hidden" })),
+      Effect.asVoid,
+      Effect.interruptible,
+      Effect.forkDaemon,
+    );
+    yield* Ref.set(pillLaterRef, fiber);
+  });
+
 // ---- one state transition, mirrored everywhere ----------------------
 
 // Explicit return type: show() re-invokes itself (the heard-nothing tray
@@ -133,11 +185,17 @@ const show = (next: State): Effect.Effect<void> =>
     if (next === "idle") {
       yield* cmd("trigger_mode", { mode: "idle" satisfies TriggerMode }).pipe(Effect.ignore);
       const engine = yield* Ref.get(engineRef);
-      const heardNothing = yield* Ref.get(heardNothingRef);
-      if (heardNothing) {
+      // The take that just ended, if one did — engine and update news
+      // re-show idle too, and those leave the pill alone. Taken, not read:
+      // each outcome is announced once.
+      const outcome = yield* Ref.getAndSet(outcomeRef, null);
+      if (outcome !== null) {
+        yield* Ref.set(lastFailureRef, outcome.state === "failed" ? outcome.reason : null);
+        yield* settlePill(outcome);
+      }
+      if (outcome?.state === "heard-nothing") {
         // A take transcribed to empty: say so instead of pretending
         // nothing happened, then revert to the normal idle text.
-        yield* Ref.set(heardNothingRef, false);
         yield* trayStatus("heard nothing — mic muted or dead?");
         yield* Effect.sleep(Duration.seconds(4)).pipe(
           Effect.zipRight(
@@ -155,8 +213,13 @@ const show = (next: State): Effect.Effect<void> =>
         const gap = yield* Ref.get(lastGapMs);
         const update = yield* Ref.get(updateReadyRef);
         const platform = yield* Ref.get(platformRef);
+        const failure = yield* Ref.get(lastFailureRef);
         const base =
-          gap === null ? `ready — ${platform.triggerHint}` : `ready — last take ${gap}ms`;
+          failure !== null
+            ? `ready — last take failed: ${failure}`
+            : gap === null
+              ? `ready — ${platform.triggerHint}`
+              : `ready — last take ${gap}ms`;
         yield* trayStatus(
           update === null ? base : `${base} · v${update} ready on restart`,
         );
@@ -167,7 +230,14 @@ const show = (next: State): Effect.Effect<void> =>
         { recording: "listening…", transcribing: "thinking…", injecting: "typing…" }[next],
       );
     }
-    yield* waveform(next === "recording");
+    // The pill, last — after the tray, so the pipeline command that
+    // follows show() is invoked before the pill's reader even wakes. Only
+    // a word in a mailbox: nothing here waits on IPC. Idle says nothing
+    // itself; the take's outcome (above) has the last word.
+    if (next !== "idle") {
+      const word = { recording: "recording", transcribing: "thinking", injecting: "typing" } as const;
+      yield* pill({ state: word[next] });
+    }
   });
 
 // ---- the pipeline ---------------------------------------------------
@@ -193,8 +263,14 @@ const onPushStarted = Effect.gen(function* () {
 }).pipe(
   Effect.catchTag("CmdError", (e) =>
     Effect.gen(function* () {
-      yield* Effect.sync(() => console.error(`[sayit] ${e.cmd} failed:`, e.cause));
+      const verdict = failed({ kind: "error", cmd: e.cmd, cause: e.cause });
+      yield* Effect.sync(() =>
+        console.error(`[sayit] ${e.cmd} failed (pill: "${verdict.reason}"):`, e.cause),
+      );
       yield* sound("refuse");
+      // The pill was never shown for this press; show("idle") brings it up
+      // with the reason, straight from hidden.
+      yield* Ref.set(outcomeRef, verdict);
       yield* show("idle");
     }),
   ),
@@ -254,6 +330,7 @@ const runTake = (keyUpMs: number) => Effect.gen(function* () {
     const inject = yield* cmd<InjectTiming>("inject_text", { text: take.text });
     const tDone = yield* Clock.currentTimeMillis;
     yield* sound("accept");
+    yield* Ref.set(outcomeRef, { state: "done" }); // the pill's "done", at show("idle")
 
     // Three clocks meet here: the OS stamp, this webview, the Rust stages.
     const totalMs = tDone - t0; // what the old log called "the gap"
@@ -261,7 +338,8 @@ const runTake = (keyUpMs: number) => Effect.gen(function* () {
     // clipboard-restore wait. THIS is the gap the north star talks about.
     const feltMs = totalMs - (inject.totalMs - inject.visibleMs);
     const dispatchMs = tEntry - t0;
-    // Coordinator housekeeping: tray + waveform IPC around the commands.
+    // Coordinator housekeeping: trigger + tray IPC around the commands.
+    // (The pill's IPC is not in here: show() only drops it in a mailbox.)
     const preMs = tCall - tEntry + (tInject - tBack);
     const rustAccounted =
       take.stopMs + take.engineWaitMs + take.wavMs + take.httpMs + take.parseMs;
@@ -277,7 +355,7 @@ const runTake = (keyUpMs: number) => Effect.gen(function* () {
       [
         `[gap] ━━ felt ${feltMs}ms · total ${totalMs}ms · ${(take.audioMs / 1000).toFixed(1)}s audio · ${take.text.length} chars`,
         row("dispatch", dispatchMs, "key-up event → coordinator"),
-        row("housekeeping", preMs, "tray + waveform IPC"),
+        row("housekeeping", preMs, "trigger + tray IPC"),
         row("mic stop", take.stopMs, "tail + teardown + resample"),
         row("engine wait", take.engineWaitMs, `${take.attempts} attempt${take.attempts === 1 ? "" : "s"}`),
         row("wav encode", take.wavMs),
@@ -311,10 +389,10 @@ const runTake = (keyUpMs: number) => Effect.gen(function* () {
       },
     }).pipe(Effect.ignore);
   } else {
-    // An empty take must be FELT: woosh now, tray explains via the
-    // heardNothing flag when ensuring() returns us to idle.
+    // An empty take must be FELT: woosh now; the pill and tray explain
+    // via the outcome when ensuring() returns us to idle.
     yield* sound("refuse");
-    yield* Ref.set(heardNothingRef, true);
+    yield* Ref.set(outcomeRef, { state: "heard-nothing" });
   }
 }).pipe(
   // The WHOLE take wears the seatbelt — transcribe, inject, everything.
@@ -322,11 +400,19 @@ const runTake = (keyUpMs: number) => Effect.gen(function* () {
   // wedged the flow *after* the text had visibly landed.)
   Effect.timeout(Duration.seconds(110)),
   // CmdError = a stage failed; TimeoutException = a stage never answered.
-  // Both end the same way: audible refusal, back to idle, key usable.
+  // Both end the same way: audible refusal, back to idle, key usable —
+  // and the pill says why, in plain words (pill.ts reasonFor). A timeout
+  // names no command, but stateRef still says which stage was waiting.
   Effect.catchAll((e) =>
     Effect.gen(function* () {
-      yield* Effect.sync(() => console.error("[sayit] take failed:", e));
+      const failure: Failure =
+        e._tag === "CmdError"
+          ? { kind: "error", cmd: e.cmd, cause: e.cause }
+          : { kind: "timeout", stage: yield* Ref.get(stateRef) };
+      const verdict = failed(failure);
+      yield* Effect.sync(() => console.error(`[sayit] take failed (pill: "${verdict.reason}"):`, e));
       yield* sound("refuse");
+      yield* Ref.set(outcomeRef, verdict);
     }),
   ),
   Effect.ensuring(show("idle")),

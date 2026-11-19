@@ -22,7 +22,7 @@ mod transcribe;
 use platform::Platform;
 use std::io::Write;
 use std::sync::{Arc, Mutex};
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 /// The tray's microphone pick. None = system default.
 pub struct MicChoice(pub Mutex<Option<String>>);
@@ -215,8 +215,8 @@ struct GapRow {
     /// i64: two clocks are subtracted, so rounding may make it -1.
     dispatch_ms: i64,
     /// Coordinator housekeeping around the two pipeline commands: the
-    /// show() calls' tray + waveform IPC, before stop_and_transcribe and
-    /// between it and inject_text.
+    /// trigger_mode + show() calls' tray IPC, before stop_and_transcribe
+    /// and between it and inject_text. (The pill's IPC is never awaited.)
     pre_ms: u64,
     stop_ms: u64,
     engine_wait_ms: u64,
@@ -312,28 +312,66 @@ fn log_gap(app: tauri::AppHandle, row: GapRow) {
     }
 }
 
-/// The waveform window appears bottom-center while recording. It is
-/// focusable:false in config — it must NEVER take focus, or the paste
-/// lands in the wrong place. Show/hide live on the Rust side so the
-/// webview needs no window-management capabilities.
+/// The pill's word from the coordinator, as `src/pill.ts` defines it: what
+/// the pipeline is doing ("recording", "thinking", "typing", "done",
+/// "heard-nothing", "failed", "hidden") and, for a failure, the plain
+/// sentence saying why. The word, its timing, and the copy are decisions,
+/// so they stay in TypeScript; Rust reads only enough to know whether the
+/// window belongs on screen.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+struct Pill {
+    state: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    reason: Option<String>,
+}
+
+/// Puts the waveform window where the pill's word says it should be, and
+/// forwards the word, unchanged, to the pill's webview as `pill_state`.
+/// The coordinator never awaits this (it posts words through a mailbox),
+/// so nothing here sits between key-up and the text.
 #[tauri::command]
-fn waveform_show(app: tauri::AppHandle) {
-    if let Some(w) = app.get_webview_window("waveform") {
-        if let (Ok(Some(monitor)), Ok(size)) = (w.primary_monitor(), w.outer_size()) {
-            let screen = monitor.size();
-            let x = screen.width.saturating_sub(size.width) / 2;
-            let y = screen.height.saturating_sub(size.height + 96);
-            let _ = w.set_position(tauri::PhysicalPosition::new(x as i32, y as i32));
-        }
-        let _ = w.show();
+fn pill_state(app: tauri::AppHandle, pill: Pill) {
+    let Some(w) = app.get_webview_window("waveform") else {
+        return;
+    };
+    // Tell the page first: by the time the window is on screen, the new
+    // word is already queued in its webview.
+    let _ = app.emit_to("waveform", "pill_state", &pill);
+    if pill.state == "hidden" {
+        let _ = w.hide();
+    } else {
+        // Every visible word re-asserts position and visibility. Both are
+        // idempotent, and it means there's no "is it showing?" bookkeeping
+        // to race a hide still in flight.
+        waveform_show(&w);
     }
 }
 
-#[tauri::command]
-fn waveform_hide(app: tauri::AppHandle) {
-    if let Some(w) = app.get_webview_window("waveform") {
-        let _ = w.hide();
+/// The waveform window sits bottom-center. It must NEVER take focus, or
+/// the paste lands in the wrong place — and since the pill now stays up
+/// through the paste, that rule is load-bearing. Two settings in
+/// tauri.conf.json hold it:
+/// - `focusable: false`: WS_EX_NOACTIVATE on Windows, so a click can't
+///   activate it;
+/// - `focus: false`: tao shows the window with SW_SHOWNOACTIVATE instead
+///   of SW_SHOW, which would activate it.
+///
+/// Click-through is deferred until it's verified on real Windows: tao's
+/// `set_ignore_cursor_events(true)` adds WS_EX_TRANSPARENT | WS_EX_LAYERED,
+/// and nothing in tao or wry calls SetLayeredWindowAttributes — per the
+/// Win32 docs, a layered window left that way may not be drawn at all. So
+/// a click on the pill still lands on the pill (without moving focus).
+///
+/// Show/hide live on the Rust side so the webview needs no
+/// window-management capabilities.
+fn waveform_show(w: &tauri::WebviewWindow) {
+    if let (Ok(Some(monitor)), Ok(size)) = (w.primary_monitor(), w.outer_size()) {
+        let screen = monitor.size();
+        let x = screen.width.saturating_sub(size.width) / 2;
+        let y = screen.height.saturating_sub(size.height + 96);
+        let _ = w.set_position(tauri::PhysicalPosition::new(x as i32, y as i32));
     }
+    let _ = w.show();
 }
 
 pub fn run() {
@@ -417,8 +455,7 @@ pub fn run() {
             engine_start,
             engine_sleep,
             log_gap,
-            waveform_show,
-            waveform_hide,
+            pill_state,
             dictionary::dictionary_rules,
             dictionary::dictionary_save,
             dictionary::dictionary_preview,
